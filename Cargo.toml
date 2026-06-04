@@ -1,0 +1,15 @@
+[package]
+name = "intent"
+version = "0.1.0"
+edition = "2021"
+description = "A declarative security policy compiler for Linux."
+license = "MIT"
+repository = "https://github.com/dmulder/intent"
+
+[lib]
+name = "intent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "intent"
+path = "src/main.rs"
