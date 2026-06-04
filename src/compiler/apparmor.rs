@@ -1,11 +1,11 @@
 //! AppArmor profile generation.
 
-use std::path::Path;
+use crate::schema::IntentDocument;
 
 /// Return placeholder AppArmor compiler output.
-pub fn compile_placeholder(intent_path: &Path) -> String {
+pub fn compile_placeholder(document: &IntentDocument) -> String {
     format!(
-        "AppArmor profile generation is not implemented yet for {}",
-        intent_path.display()
+        "AppArmor profile generation is not implemented yet for {} ({})",
+        document.application.name, document.application.executable
     )
 }

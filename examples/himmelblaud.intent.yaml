@@ -1,0 +1,86 @@
+# Intent schema version. Version 1 is the first intentionally small schema.
+version: 1
+
+# Application identity and launch context.
+application:
+  # Human-readable application name used in diagnostics and generated policy names.
+  name: himmelblaud
+
+  # Short maintainer-facing description. This is documentation for humans.
+  description: Entra ID authentication daemon for Linux login
+
+  # Absolute path to the executable that should run under this policy.
+  executable: /usr/libexec/himmelblaud
+
+  # Optional Unix user and group the application normally runs as.
+  # Leave these out for applications that run as the invoking user.
+  user: root
+  group: root
+
+# Storage declares files or directories by purpose, not by SELinux/AppArmor type.
+# Each entry has:
+#   path: absolute file or directory path
+#   access: read or read-write
+storage:
+  # Config is long-lived administrator or package-provided configuration.
+  config:
+    - path: /etc/himmelblaud
+      access: read
+
+  # Cache is disposable data the application can rebuild.
+  cache:
+    - path: /var/cache/himmelblaud
+      access: read-write
+
+  # State is persistent application-owned data.
+  state:
+    - path: /var/lib/himmelblaud
+      access: read-write
+
+  # Runtime is short-lived data such as pid files and sockets under /run.
+  runtime:
+    - path: /run/himmelblaud
+      access: read-write
+
+# Network declares outbound connections initiated by the application.
+network:
+  outbound:
+    # For common protocols, protocol can be http or https and port is optional.
+    - to: login.microsoftonline.com
+      protocol: https
+
+    # For raw tcp or udp access, include the destination port.
+    - to: metadata.google.internal
+      protocol: tcp
+      port: 80
+
+# IPC declares local inter-process communication.
+ipc:
+  unix_sockets:
+    # mode: server means the application creates/listens on this socket.
+    - path: /run/himmelblaud/socket
+      mode: server
+
+    # mode: client means the application connects to an existing socket.
+    - path: /run/systemd/resolve/io.systemd.Resolve
+      mode: client
+
+  dbus:
+    system:
+      # owns lists well-known system-bus names this application provides.
+      owns:
+        - com.microsoft.himmelblaud
+
+      # talks_to lists well-known system-bus services this application calls.
+      talks_to:
+        - org.freedesktop.DBus
+        - org.freedesktop.resolve1
+
+# Linux capabilities by friendly kebab-case name.
+# Keep this list short; prefer storage/network/ipc intents when possible.
+capabilities:
+  - net-bind-service
+
+# Free-form notes for reviewers. Intent does not compile these into policy.
+notes:
+  - Example policy only; paths may differ by distribution packaging.

@@ -26,9 +26,50 @@ Intent is intended to make that workflow more direct:
 
 ## Current Status
 
-This repository currently contains the initial project skeleton. The CLI parses
-the planned command structure and returns useful placeholder output, but policy
-generation and audit-log analysis are not implemented yet.
+This repository currently contains the first `intent.yaml` schema, YAML parsing,
+validation, and placeholder compiler/audit plumbing. Policy generation and
+audit-log analysis are not implemented yet.
+
+## Example `intent.yaml`
+
+```yaml
+version: 1
+
+application:
+  name: my-service
+  description: Small service that calls an HTTPS API
+  executable: /usr/bin/my-service
+  user: my-service
+  group: my-service
+
+storage:
+  config:
+    - path: /etc/my-service
+      access: read
+  state:
+    - path: /var/lib/my-service
+      access: read-write
+
+network:
+  outbound:
+    - to: api.example.com
+      protocol: https
+
+ipc:
+  unix_sockets:
+    - path: /run/my-service/control.sock
+      mode: server
+  dbus:
+    system:
+      talks_to:
+        - org.freedesktop.DBus
+
+capabilities:
+  - net-bind-service
+
+notes:
+  - Keep this file focused on application behavior, not SELinux or AppArmor details.
+```
 
 ## Planned CLI
 

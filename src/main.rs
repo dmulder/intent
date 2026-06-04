@@ -9,8 +9,12 @@ use intent::config::IntentConfig;
 fn main() -> ExitCode {
     match Cli::parse(env::args().skip(1)) {
         Ok(command) => {
-            run(command);
-            ExitCode::SUCCESS
+            if let Err(error) = run(command) {
+                eprintln!("{error}");
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(message) => {
             eprintln!("{message}\n");
@@ -117,33 +121,47 @@ fn parse_explain(args: &[String]) -> Result<Cli, String> {
     }
 }
 
-fn run(command: Cli) {
+fn run(command: Cli) -> Result<(), String> {
     match command {
         Cli::Validate { intent_path } => {
-            let config = IntentConfig::from_path(intent_path);
+            let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
             println!(
-                "Validation placeholder: {} is ready for schema validation.",
-                config.source.display()
+                "Validated {} for application '{}'.",
+                config.source.display(),
+                config.document.application.name
             );
         }
         Cli::Build {
             intent_path,
             target,
         } => {
+            let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
             println!(
                 "Build placeholder: compiling {} for target {target}.",
                 intent_path.display()
             );
             match target {
                 Target::Selinux => {
-                    println!("{}", selinux_compiler::compile_placeholder(&intent_path))
+                    println!(
+                        "{}",
+                        selinux_compiler::compile_placeholder(&config.document)
+                    )
                 }
                 Target::AppArmor => {
-                    println!("{}", apparmor_compiler::compile_placeholder(&intent_path))
+                    println!(
+                        "{}",
+                        apparmor_compiler::compile_placeholder(&config.document)
+                    )
                 }
                 Target::All => {
-                    println!("{}", selinux_compiler::compile_placeholder(&intent_path));
-                    println!("{}", apparmor_compiler::compile_placeholder(&intent_path));
+                    println!(
+                        "{}",
+                        selinux_compiler::compile_placeholder(&config.document)
+                    );
+                    println!(
+                        "{}",
+                        apparmor_compiler::compile_placeholder(&config.document)
+                    );
                 }
             }
         }
@@ -161,13 +179,17 @@ fn run(command: Cli) {
             }
         }
         Cli::Explain { intent_path } => {
+            let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
             println!(
-                "Explain placeholder: {} will be described in higher-level security intent terms.",
-                intent_path.display()
+                "Explain placeholder: {} describes application '{}' in higher-level security intent terms.",
+                config.source.display(),
+                config.document.application.name
             );
         }
         Cli::Help => println!("{}", usage()),
     }
+
+    Ok(())
 }
 
 fn usage() -> &'static str {
