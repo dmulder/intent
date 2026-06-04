@@ -2,7 +2,10 @@
 
 use std::fmt;
 
+use serde::de::{self, Deserializer};
 use serde::Deserialize;
+
+use crate::diagnostics::{Diagnostic, Severity};
 
 /// Current schema version understood by this crate.
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
@@ -34,24 +37,51 @@ pub struct IntentDocument {
 
 impl IntentDocument {
     pub fn validate(&self) -> Result<(), ValidationError> {
-        let mut errors = Vec::new();
+        self.validate_with_options(ValidationOptions::default())
+            .map(|_| ())
+    }
+
+    pub fn validate_with_options(
+        &self,
+        options: ValidationOptions,
+    ) -> Result<ValidationReport, ValidationError> {
+        let diagnostics = self.diagnostics();
+        let has_fatal = diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == Severity::Error
+                || (options.deny_warnings && diagnostic.severity == Severity::Warning)
+        });
+
+        if has_fatal {
+            Err(ValidationError { diagnostics })
+        } else {
+            Ok(ValidationReport { diagnostics })
+        }
+    }
+
+    pub fn diagnostics(&self) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
 
         if self.version != CURRENT_SCHEMA_VERSION {
-            errors.push(format!(
-                "version must be {CURRENT_SCHEMA_VERSION}; found {}",
-                self.version
-            ));
+            diagnostics.push(
+                Diagnostic::error(format!("version must be {CURRENT_SCHEMA_VERSION}"))
+                    .found(self.version.to_string())
+                    .help(format!("set version: {CURRENT_SCHEMA_VERSION}")),
+            );
         }
 
-        self.application.validate(&mut errors);
-        self.storage.validate(&mut errors);
-        self.network.validate(&mut errors);
-        self.ipc.validate(&mut errors);
+        self.application.validate(&mut diagnostics);
+        self.storage.validate(&mut diagnostics);
+        self.network.validate(&mut diagnostics);
+        self.ipc.validate(&mut diagnostics);
 
         for (index, capability) in self.capabilities.iter().enumerate() {
-            validate_non_empty(&mut errors, format!("capabilities[{index}]"), capability);
+            validate_non_empty(
+                &mut diagnostics,
+                format!("capabilities[{index}]"),
+                capability,
+            );
             validate_kebab_name(
-                &mut errors,
+                &mut diagnostics,
                 format!("capabilities[{index}]"),
                 capability,
                 "use developer-friendly kebab-case such as net-bind-service",
@@ -59,14 +89,30 @@ impl IntentDocument {
         }
 
         for (index, note) in self.notes.iter().enumerate() {
-            validate_non_empty(&mut errors, format!("notes[{index}]"), note);
+            validate_non_empty(&mut diagnostics, format!("notes[{index}]"), note);
         }
 
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(ValidationError { errors })
-        }
+        diagnostics
+    }
+}
+
+/// Validation options used by `intent validate`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ValidationOptions {
+    pub deny_warnings: bool,
+}
+
+/// Diagnostics found while validating a syntactically parsed document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationReport {
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl ValidationReport {
+    pub fn warnings(&self) -> impl Iterator<Item = &Diagnostic> {
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Warning)
     }
 }
 
@@ -85,27 +131,30 @@ pub struct Application {
 }
 
 impl Application {
-    fn validate(&self, errors: &mut Vec<String>) {
-        validate_non_empty(errors, "application.name", &self.name);
-        validate_non_empty(errors, "application.executable", &self.executable);
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
+        validate_non_empty(diagnostics, "application.name", &self.name);
+        validate_non_empty(diagnostics, "application.executable", &self.executable);
 
         if !self.executable.starts_with('/') {
-            errors.push(format!(
-                "application.executable must be an absolute path; found '{}'",
-                self.executable
-            ));
+            diagnostics.push(
+                Diagnostic::error("application.executable must be an absolute path")
+                    .found(self.executable.clone())
+                    .help(format!("use /{}", self.executable.trim_start_matches('/'))),
+            );
+        } else {
+            validate_path(diagnostics, "application.executable", &self.executable);
         }
 
         if let Some(description) = &self.description {
-            validate_non_empty(errors, "application.description", description);
+            validate_non_empty(diagnostics, "application.description", description);
         }
 
         if let Some(user) = &self.user {
-            validate_non_empty(errors, "application.user", user);
+            validate_non_empty(diagnostics, "application.user", user);
         }
 
         if let Some(group) = &self.group {
-            validate_non_empty(errors, "application.group", group);
+            validate_non_empty(diagnostics, "application.group", group);
         }
     }
 }
@@ -125,11 +174,31 @@ pub struct Storage {
 }
 
 impl Storage {
-    fn validate(&self, errors: &mut Vec<String>) {
-        validate_storage_paths(errors, "storage.config", &self.config);
-        validate_storage_paths(errors, "storage.cache", &self.cache);
-        validate_storage_paths(errors, "storage.state", &self.state);
-        validate_storage_paths(errors, "storage.runtime", &self.runtime);
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
+        validate_storage_paths(
+            diagnostics,
+            "storage.config",
+            &self.config,
+            StorageKind::Config,
+        );
+        validate_storage_paths(
+            diagnostics,
+            "storage.cache",
+            &self.cache,
+            StorageKind::Cache,
+        );
+        validate_storage_paths(
+            diagnostics,
+            "storage.state",
+            &self.state,
+            StorageKind::State,
+        );
+        validate_storage_paths(
+            diagnostics,
+            "storage.runtime",
+            &self.runtime,
+            StorageKind::Runtime,
+        );
     }
 }
 
@@ -139,14 +208,31 @@ impl Storage {
 pub struct StoragePath {
     pub path: String,
     pub access: StorageAccess,
+    #[serde(default)]
+    pub justification: Option<String>,
 }
 
 /// Storage access mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageAccess {
     Read,
     ReadWrite,
+}
+
+impl<'de> Deserialize<'de> for StorageAccess {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "read" => Ok(Self::Read),
+            "read-write" => Ok(Self::ReadWrite),
+            other => Err(de::Error::custom(format!(
+                "invalid access mode '{other}'; expected read or read-write"
+            ))),
+        }
+    }
 }
 
 /// Network access requested by the application.
@@ -158,14 +244,18 @@ pub struct Network {
 }
 
 impl Network {
-    fn validate(&self, errors: &mut Vec<String>) {
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
         for (index, outbound) in self.outbound.iter().enumerate() {
             let prefix = format!("network.outbound[{index}]");
-            validate_non_empty(errors, format!("{prefix}.to"), &outbound.to);
+            validate_non_empty(diagnostics, format!("{prefix}.to"), &outbound.to);
 
             if let Some(port) = outbound.port {
                 if port == 0 {
-                    errors.push(format!("{prefix}.port must be between 1 and 65535"));
+                    diagnostics.push(
+                        Diagnostic::error(format!("{prefix}.port must be between 1 and 65535"))
+                            .found("0")
+                            .help("use a TCP or UDP port from 1 through 65535"),
+                    );
                 }
             }
 
@@ -174,9 +264,12 @@ impl Network {
                 NetworkProtocol::Tcp | NetworkProtocol::Udp
             ) && outbound.port.is_none()
             {
-                errors.push(format!(
-                    "{prefix}.port is required when protocol is tcp or udp"
-                ));
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "{prefix}.port is required when protocol is tcp or udp"
+                    ))
+                    .help("add a port field, for example port: 443"),
+                );
             }
         }
     }
@@ -193,13 +286,30 @@ pub struct OutboundNetwork {
 }
 
 /// Developer-facing network protocol names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkProtocol {
     Http,
     Https,
     Tcp,
     Udp,
+}
+
+impl<'de> Deserialize<'de> for NetworkProtocol {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "http" => Ok(Self::Http),
+            "https" => Ok(Self::Https),
+            "tcp" => Ok(Self::Tcp),
+            "udp" => Ok(Self::Udp),
+            other => Err(de::Error::custom(format!(
+                "unknown network protocol '{other}'; expected http, https, tcp, or udp"
+            ))),
+        }
+    }
 }
 
 /// Local IPC access requested by the application.
@@ -213,20 +323,23 @@ pub struct Ipc {
 }
 
 impl Ipc {
-    fn validate(&self, errors: &mut Vec<String>) {
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
         for (index, socket) in self.unix_sockets.iter().enumerate() {
             let prefix = format!("ipc.unix_sockets[{index}]");
-            validate_non_empty(errors, format!("{prefix}.path"), &socket.path);
+            validate_non_empty(diagnostics, format!("{prefix}.path"), &socket.path);
 
             if !socket.path.starts_with('/') {
-                errors.push(format!(
-                    "{prefix}.path must be an absolute path; found '{}'",
-                    socket.path
-                ));
+                diagnostics.push(
+                    Diagnostic::error(format!("{prefix}.path must be an absolute path"))
+                        .found(socket.path.clone())
+                        .help(format!("use /{}", socket.path.trim_start_matches('/'))),
+                );
+            } else {
+                validate_path(diagnostics, format!("{prefix}.path"), &socket.path);
             }
         }
 
-        self.dbus.validate(errors);
+        self.dbus.validate(diagnostics);
     }
 }
 
@@ -239,11 +352,26 @@ pub struct UnixSocket {
 }
 
 /// Whether the application creates or connects to a socket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnixSocketMode {
     Server,
     Client,
+}
+
+impl<'de> Deserialize<'de> for UnixSocketMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "server" => Ok(Self::Server),
+            "client" => Ok(Self::Client),
+            other => Err(de::Error::custom(format!(
+                "invalid socket mode '{other}'; expected server or client"
+            ))),
+        }
+    }
 }
 
 /// D-Bus access requested by the application.
@@ -255,8 +383,8 @@ pub struct Dbus {
 }
 
 impl Dbus {
-    fn validate(&self, errors: &mut Vec<String>) {
-        self.system.validate(errors);
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
+        self.system.validate(diagnostics);
     }
 }
 
@@ -271,13 +399,17 @@ pub struct SystemBus {
 }
 
 impl SystemBus {
-    fn validate(&self, errors: &mut Vec<String>) {
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
         for (index, name) in self.owns.iter().enumerate() {
-            validate_dbus_name(errors, format!("ipc.dbus.system.owns[{index}]"), name);
+            validate_dbus_name(diagnostics, format!("ipc.dbus.system.owns[{index}]"), name);
         }
 
         for (index, name) in self.talks_to.iter().enumerate() {
-            validate_dbus_name(errors, format!("ipc.dbus.system.talks_to[{index}]"), name);
+            validate_dbus_name(
+                diagnostics,
+                format!("ipc.dbus.system.talks_to[{index}]"),
+                name,
+            );
         }
     }
 }
@@ -285,16 +417,16 @@ impl SystemBus {
 /// Validation failures found after a document was syntactically parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationError {
-    pub errors: Vec<String>,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, error) in self.errors.iter().enumerate() {
+        for (index, diagnostic) in self.diagnostics.iter().enumerate() {
             if index > 0 {
                 writeln!(f)?;
             }
-            write!(f, "- {error}")?;
+            write!(f, "{diagnostic}")?;
         }
 
         Ok(())
@@ -303,37 +435,109 @@ impl fmt::Display for ValidationError {
 
 impl std::error::Error for ValidationError {}
 
-fn validate_storage_paths(errors: &mut Vec<String>, field: &str, paths: &[StoragePath]) {
+#[derive(Debug, Clone, Copy)]
+enum StorageKind {
+    Config,
+    Cache,
+    State,
+    Runtime,
+}
+
+fn validate_storage_paths(
+    diagnostics: &mut Vec<Diagnostic>,
+    field: &str,
+    paths: &[StoragePath],
+    kind: StorageKind,
+) {
     for (index, entry) in paths.iter().enumerate() {
         let prefix = format!("{field}[{index}]");
-        validate_non_empty(errors, format!("{prefix}.path"), &entry.path);
+        validate_non_empty(diagnostics, format!("{prefix}.path"), &entry.path);
 
         if !entry.path.starts_with('/') {
-            errors.push(format!(
-                "{prefix}.path must be an absolute path; found '{}'",
-                entry.path
-            ));
+            diagnostics.push(
+                Diagnostic::error(format!("{prefix}.path must be an absolute path"))
+                    .found(entry.path.clone())
+                    .help(format!("use /{}", entry.path.trim_start_matches('/'))),
+            );
+            continue;
+        }
+
+        validate_path(diagnostics, format!("{prefix}.path"), &entry.path);
+
+        let broad_path = trim_trailing_slashes(&entry.path);
+        if matches!(broad_path.as_str(), "/" | "/etc" | "/var" | "/usr") {
+            diagnostics.push(
+                Diagnostic::warning(format!("{prefix}.path is very broad"))
+                    .found(entry.path.clone())
+                    .help("declare the narrowest application-specific directory instead"),
+            );
+        }
+
+        match kind {
+            StorageKind::Config => {}
+            StorageKind::Runtime => {
+                if !is_under(&entry.path, "/run") && !is_under(&entry.path, "/var/run") {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "{prefix}.path must be under /run or /var/run for runtime storage"
+                        ))
+                        .found(entry.path.clone())
+                        .help("move runtime files to /run/<application>"),
+                    );
+                }
+            }
+            StorageKind::Cache => {
+                validate_expected_storage_root(
+                    diagnostics,
+                    &prefix,
+                    &entry.path,
+                    entry.justification.as_deref(),
+                    "/var/cache",
+                    "cache",
+                    "move cache files to /var/cache/<application> or add justification",
+                );
+            }
+            StorageKind::State => {
+                validate_expected_storage_root(
+                    diagnostics,
+                    &prefix,
+                    &entry.path,
+                    entry.justification.as_deref(),
+                    "/var/lib",
+                    "state",
+                    "move state files to /var/lib/<application> or add justification",
+                );
+            }
         }
     }
 }
 
-fn validate_dbus_name(errors: &mut Vec<String>, field: String, name: &str) {
-    validate_non_empty(errors, &field, name);
+fn validate_dbus_name(diagnostics: &mut Vec<Diagnostic>, field: String, name: &str) {
+    validate_non_empty(diagnostics, &field, name);
 
-    if !name.contains('.') {
-        errors.push(format!(
-            "{field} should be a well-known D-Bus name such as org.example.Service"
-        ));
+    if name.trim().is_empty() {
+        return;
+    }
+
+    if !is_valid_dbus_name(name) {
+        diagnostics.push(
+            Diagnostic::error(format!("{field} must be a valid D-Bus well-known name"))
+                .found(name.to_string())
+                .help("use a dotted name such as org.example.Service"),
+        );
     }
 }
 
-fn validate_non_empty(errors: &mut Vec<String>, field: impl AsRef<str>, value: &str) {
+fn validate_non_empty(diagnostics: &mut Vec<Diagnostic>, field: impl AsRef<str>, value: &str) {
     if value.trim().is_empty() {
-        errors.push(format!("{} must not be empty", field.as_ref()));
+        diagnostics.push(Diagnostic::error(format!(
+            "{} must not be empty",
+            field.as_ref()
+        )));
     }
 }
 
-fn validate_kebab_name(errors: &mut Vec<String>, field: String, value: &str, help: &str) {
+fn validate_kebab_name(diagnostics: &mut Vec<Diagnostic>, field: String, value: &str, help: &str) {
     if value.is_empty() {
         return;
     }
@@ -346,8 +550,98 @@ fn validate_kebab_name(errors: &mut Vec<String>, field: String, value: &str, hel
         && !value.contains("--");
 
     if !valid {
-        errors.push(format!("{field} must be kebab-case; {help}"));
+        diagnostics.push(
+            Diagnostic::error(format!("{field} must be kebab-case"))
+                .found(value.to_string())
+                .help(help),
+        );
     }
+}
+
+fn validate_path(diagnostics: &mut Vec<Diagnostic>, field: impl AsRef<str>, path: &str) {
+    let field = field.as_ref();
+
+    if path.contains('\0') {
+        diagnostics.push(
+            Diagnostic::error(format!("{field} must not contain NUL bytes"))
+                .found(path.to_string()),
+        );
+    }
+
+    if path.lines().count() > 1 {
+        diagnostics.push(
+            Diagnostic::error(format!("{field} must not contain line breaks"))
+                .found(path.to_string())
+                .help("keep paths on one line"),
+        );
+    }
+
+    if path
+        .split('/')
+        .any(|component| component == "." || component == "..")
+    {
+        diagnostics.push(
+            Diagnostic::error(format!("{field} must not contain . or .. path components"))
+                .found(path.to_string())
+                .help("use a normalized absolute path"),
+        );
+    }
+}
+
+fn validate_expected_storage_root(
+    diagnostics: &mut Vec<Diagnostic>,
+    prefix: &str,
+    path: &str,
+    justification: Option<&str>,
+    expected_root: &str,
+    kind: &str,
+    help: &str,
+) {
+    if is_under(path, expected_root) {
+        return;
+    }
+
+    if justification.is_some_and(|value| !value.trim().is_empty()) {
+        return;
+    }
+
+    diagnostics.push(
+        Diagnostic::warning(format!(
+            "{prefix}.path is outside {expected_root} for {kind} storage"
+        ))
+        .found(path.to_string())
+        .help(help),
+    );
+}
+
+fn is_under(path: &str, expected_root: &str) -> bool {
+    let path = trim_trailing_slashes(path);
+    path == expected_root || path.starts_with(&format!("{expected_root}/"))
+}
+
+fn trim_trailing_slashes(path: &str) -> String {
+    if path == "/" {
+        return path.to_string();
+    }
+
+    path.trim_end_matches('/').to_string()
+}
+
+fn is_valid_dbus_name(name: &str) -> bool {
+    if name.len() > 255 || !name.contains('.') || name.starts_with('.') || name.ends_with('.') {
+        return false;
+    }
+
+    name.split('.').all(|part| {
+        let Some(first) = part.chars().next() else {
+            return false;
+        };
+
+        !first.is_ascii_digit()
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    })
 }
 
 #[cfg(test)]
@@ -468,9 +762,148 @@ notes:
         assert!(message.contains("network.outbound[0].to must not be empty"));
         assert!(message.contains("network.outbound[0].port must be between 1 and 65535"));
         assert!(message.contains("ipc.unix_sockets[0].path must be an absolute path"));
-        assert!(message.contains("ipc.dbus.system.owns[0] should be a well-known D-Bus name"));
+        assert!(message.contains("ipc.dbus.system.owns[0] must be a valid D-Bus"));
         assert!(message.contains("capabilities[0] must be kebab-case"));
         assert!(message.contains("notes[0] must not be empty"));
+    }
+
+    #[test]
+    fn warns_for_suspicious_broad_paths() {
+        let document = parse(
+            r#"
+version: 1
+application:
+  name: demo
+  executable: /usr/bin/demo
+storage:
+  config:
+    - path: /etc
+      access: read
+"#,
+        );
+
+        let report = document
+            .validate_with_options(ValidationOptions::default())
+            .unwrap();
+        let message = report
+            .diagnostics
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(message.contains("warning: storage.config[0].path is very broad"));
+        assert!(document
+            .validate_with_options(ValidationOptions {
+                deny_warnings: true
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_paths() {
+        let document = parse(
+            r#"
+version: 1
+application:
+  name: demo
+  executable: /usr/bin/../bin/demo
+storage:
+  config:
+    - path: /etc/demo/./config
+      access: read
+"#,
+        );
+
+        let message = document
+            .validate()
+            .expect_err("invalid paths should fail")
+            .to_string();
+
+        assert!(message.contains("application.executable must not contain . or .."));
+        assert!(message.contains("storage.config[0].path must not contain . or .."));
+        assert!(message.contains("help: use a normalized absolute path"));
+    }
+
+    #[test]
+    fn rejects_runtime_paths_outside_runtime_roots() {
+        let document = parse(
+            r#"
+version: 1
+application:
+  name: demo
+  executable: /usr/bin/demo
+storage:
+  runtime:
+    - path: /tmp/demo
+      access: read-write
+"#,
+        );
+
+        let message = document
+            .validate()
+            .expect_err("runtime path outside /run should fail")
+            .to_string();
+
+        assert!(message.contains("storage.runtime[0].path must be under /run or /var/run"));
+    }
+
+    #[test]
+    fn warns_for_unjustified_cache_and_state_paths() {
+        let document = parse(
+            r#"
+version: 1
+application:
+  name: demo
+  executable: /usr/bin/demo
+storage:
+  cache:
+    - path: /opt/demo/cache
+      access: read-write
+  state:
+    - path: /srv/demo/state
+      access: read-write
+"#,
+        );
+
+        let report = document
+            .validate_with_options(ValidationOptions::default())
+            .unwrap();
+        let message = report
+            .diagnostics
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(message.contains("warning: storage.cache[0].path is outside /var/cache"));
+        assert!(message.contains("warning: storage.state[0].path is outside /var/lib"));
+    }
+
+    #[test]
+    fn accepts_justified_cache_and_state_paths() {
+        let document = parse(
+            r#"
+version: 1
+application:
+  name: demo
+  executable: /usr/bin/demo
+storage:
+  cache:
+    - path: /opt/demo/cache
+      access: read-write
+      justification: vendor package layout
+  state:
+    - path: /srv/demo/state
+      access: read-write
+      justification: shared service data
+"#,
+        );
+
+        let report = document
+            .validate_with_options(ValidationOptions::default())
+            .unwrap();
+        assert!(report.diagnostics.is_empty());
     }
 
     #[test]

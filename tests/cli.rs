@@ -129,6 +129,65 @@ application:
 }
 
 #[test]
+fn validate_allows_warnings_by_default() {
+    let path = env::temp_dir().join(format!("intent-warning-{}.yaml", std::process::id()));
+    fs::write(
+        &path,
+        r#"
+version: 1
+application:
+  name: demo
+  executable: /usr/bin/demo
+storage:
+  config:
+    - path: /etc
+      access: read
+"#,
+    )
+    .expect("test intent file should be written");
+
+    let output = intent()
+        .arg("validate")
+        .arg(&path)
+        .output()
+        .expect("intent validate should run");
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(stderr.contains("warning: storage.config[0].path is very broad"));
+}
+
+#[test]
+fn validate_can_deny_warnings() {
+    let path = env::temp_dir().join(format!("intent-deny-warning-{}.yaml", std::process::id()));
+    fs::write(
+        &path,
+        r#"
+version: 1
+application:
+  name: demo
+  executable: /usr/bin/demo
+storage:
+  config:
+    - path: /etc
+      access: read
+"#,
+    )
+    .expect("test intent file should be written");
+
+    let output = intent()
+        .arg("validate")
+        .arg(&path)
+        .arg("--deny-warnings")
+        .output()
+        .expect("intent validate should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(stderr.contains("warning: storage.config[0].path is very broad"));
+}
+
+#[test]
 fn rejects_unknown_command() {
     let output = intent()
         .arg("unknown")
