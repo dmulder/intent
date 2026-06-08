@@ -1,0 +1,9 @@
+type=AVC msg=audit(1718123810.015:420): avc:  denied  { write } for  pid=1234 comm="himmelblaud" name="tokens.db" dev="dm-0" ino=100 scontext=system_u:system_r:himmelblaud_t:s0 tcontext=system_u:object_r:var_cache_t:s0 tclass=file permissive=0
+type=SYSCALL msg=audit(1718123810.015:420): arch=c000003e syscall=2 success=no exit=-13 a0=7ffd9dd comm="himmelblaud" exe="/usr/libexec/himmelblaud"
+type=PATH msg=audit(1718123810.015:420): item=0 name="/var/cache/himmelblaud/tokens.db" inode=100 dev=fd:00 mode=0100600 ouid=0 ogid=0
+type=AVC msg=audit(1718123811.055:421): avc:  denied  { search } for  pid=1234 comm="himmelblaud" name="himmelblaud" dev="dm-0" ino=101 scontext=system_u:system_r:himmelblaud_t:s0 tcontext=system_u:object_r:etc_t:s0 tclass=dir permissive=0
+type=PATH msg=audit(1718123811.055:421): item=0 name="/etc/himmelblaud" inode=101 dev=fd:00 mode=040755 ouid=0 ogid=0
+type=AVC msg=audit(1718123812.055:422): avc:  denied  { connectto } for  pid=1234 comm="himmelblaud" path="/run/systemd/resolve/io.systemd.Resolve" scontext=system_u:system_r:himmelblaud_t:s0 tcontext=system_u:system_r:systemd_resolved_t:s0 tclass=unix_stream_socket permissive=0
+type=AVC msg=audit(1718123813.055:423): avc:  denied  { name_connect } for  pid=1234 comm="himmelblaud" dest=443 scontext=system_u:system_r:himmelblaud_t:s0 tcontext=system_u:object_r:http_port_t:s0 tclass=tcp_socket permissive=0
+type=AVC msg=audit(1718123814.055:424): avc:  denied  { net_bind_service } for  pid=1234 comm="himmelblaud" capability=10 scontext=system_u:system_r:himmelblaud_t:s0 tcontext=system_u:system_r:himmelblaud_t:s0 tclass=capability permissive=0
+type=AVC msg=audit(1718123815.055:425): avc:  denied  { send_msg } for  pid=1234 comm="himmelblaud" bus=system dest="org.freedesktop.resolve1" scontext=system_u:system_r:himmelblaud_t:s0 tcontext=system_u:system_r:system_dbusd_t:s0 tclass=dbus permissive=0

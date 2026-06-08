@@ -134,20 +134,34 @@ fn build_selinux_can_write_policy_and_file_contexts_to_output_directory() {
 
 #[test]
 fn recognizes_observe_formats() {
-    for format in ["selinux", "apparmor"] {
-        let output = intent()
-            .args(["observe", "--source", "audit.log", "--format", format])
-            .output()
-            .expect("intent observe should run");
+    let output = intent()
+        .args([
+            "observe",
+            "--source",
+            "tests/fixtures/selinux_audit.log",
+            "--format",
+            "selinux",
+        ])
+        .output()
+        .expect("intent observe should run");
 
-        assert!(
-            output.status.success(),
-            "format {format} should be accepted"
-        );
-        let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
-        assert!(stdout.contains("Observe placeholder"));
-        assert!(stdout.contains(format));
-    }
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert!(stdout.contains("Detected SELinux denial:"));
+    assert!(stdout.contains("process: himmelblaud"));
+    assert!(stdout.contains("path: /var/cache/himmelblaud/tokens.db"));
+    assert!(stdout.contains("persistent cache storage"));
+    assert!(stdout.contains("storage:\n    cache:\n      - path: /var/cache/himmelblaud"));
+
+    let output = intent()
+        .args(["observe", "--source", "audit.log", "--format", "apparmor"])
+        .output()
+        .expect("intent observe should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert!(stdout.contains("Observe placeholder"));
+    assert!(stdout.contains("apparmor"));
 }
 
 #[test]

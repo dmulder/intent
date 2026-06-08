@@ -227,19 +227,21 @@ fn run(command: Cli) -> Result<(), String> {
                 }
             }
         }
-        Cli::Observe { source, format } => {
-            println!(
-                "Observe placeholder: reading {} audit log from {}.",
-                format,
-                source.display()
-            );
-            match format {
-                AuditFormat::Selinux => println!("{}", selinux_audit::observe_placeholder(&source)),
-                AuditFormat::AppArmor => {
-                    println!("{}", apparmor_audit::observe_placeholder(&source))
-                }
+        Cli::Observe { source, format } => match format {
+            AuditFormat::Selinux => {
+                let output = selinux_audit::observe_path(&source)
+                    .map_err(|err| format!("failed to read {}: {err}", source.display()))?;
+                print!("{output}");
             }
-        }
+            AuditFormat::AppArmor => {
+                println!(
+                    "Observe placeholder: reading {} audit log from {}.",
+                    format,
+                    source.display()
+                );
+                println!("{}", apparmor_audit::observe_placeholder(&source))
+            }
+        },
         Cli::Explain { intent_path } => {
             let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
             print!("{}", config.ir.explain());
