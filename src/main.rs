@@ -10,7 +10,7 @@ use intent::audit::{
 };
 use intent::compiler::{apparmor as apparmor_compiler, selinux as selinux_compiler, Target};
 use intent::config::IntentConfig;
-use intent::schema::ValidationOptions;
+use intent::schema::{json_schema, markdown_documentation, ValidationOptions};
 
 fn main() -> ExitCode {
     match Cli::parse(env::args().skip(1)) {
@@ -50,7 +50,16 @@ enum Cli {
     Explain {
         intent_path: PathBuf,
     },
+    Schema {
+        format: SchemaFormat,
+    },
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemaFormat {
+    Markdown,
+    JsonSchema,
 }
 
 impl Cli {
@@ -66,6 +75,7 @@ impl Cli {
             "build" => parse_build(&args[1..]),
             "observe" => parse_observe(&args[1..]),
             "explain" => parse_explain(&args[1..]),
+            "schema" => parse_schema(&args[1..]),
             other => Err(format!("unknown command '{other}'")),
         }
     }
@@ -219,6 +229,38 @@ fn parse_explain(args: &[String]) -> Result<Cli, String> {
     }
 }
 
+fn parse_schema(args: &[String]) -> Result<Cli, String> {
+    let mut format = SchemaFormat::Markdown;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--format" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --format markdown|json-schema".to_string());
+                };
+                format = match value.as_str() {
+                    "markdown" => SchemaFormat::Markdown,
+                    "json-schema" => SchemaFormat::JsonSchema,
+                    other => {
+                        return Err(format!(
+                            "invalid --format '{other}'; expected markdown or json-schema"
+                        ));
+                    }
+                };
+                index += 2;
+            }
+            other => {
+                return Err(format!(
+                    "unknown schema option '{other}'; usage: intent schema [--format markdown|json-schema]"
+                ));
+            }
+        }
+    }
+
+    Ok(Cli::Schema { format })
+}
+
 fn run(command: Cli) -> Result<(), String> {
     match command {
         Cli::Validate {
@@ -297,6 +339,10 @@ fn run(command: Cli) -> Result<(), String> {
             let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
             print!("{}", config.ir.explain());
         }
+        Cli::Schema { format } => match format {
+            SchemaFormat::Markdown => print!("{}", markdown_documentation()),
+            SchemaFormat::JsonSchema => print!("{}", json_schema()),
+        },
         Cli::Help => println!("{}", usage()),
     }
 
@@ -310,7 +356,8 @@ Usage:
   intent validate <intent.yaml> [--deny-warnings]
   intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]
   intent observe --source <audit.log> --format selinux|apparmor [--interactive] [--merge-into <intent.yaml>]
-  intent explain <intent.yaml>"
+  intent explain <intent.yaml>
+  intent schema [--format markdown|json-schema]"
 }
 
 fn review_suggestions(format: AuditFormat, contents: &str) -> Vec<ReviewSuggestion> {
@@ -661,6 +708,22 @@ mod tests {
             Cli::parse(args(&["explain", "intent.yaml"])),
             Ok(Cli::Explain {
                 intent_path: PathBuf::from("intent.yaml")
+            })
+        );
+    }
+
+    #[test]
+    fn parses_schema() {
+        assert_eq!(
+            Cli::parse(args(&["schema"])),
+            Ok(Cli::Schema {
+                format: SchemaFormat::Markdown
+            })
+        );
+        assert_eq!(
+            Cli::parse(args(&["schema", "--format", "json-schema"])),
+            Ok(Cli::Schema {
+                format: SchemaFormat::JsonSchema
             })
         );
     }

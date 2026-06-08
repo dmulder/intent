@@ -1,5 +1,10 @@
+# Version 1 is the first intentionally small Intent schema.
 version: 1
 
+# Only two application fields are required: a readable name and the executable.
 application:
+  # Used in diagnostics and generated policy names.
   name: minimal
+
+  # Absolute path to the program that should run under the generated policy.
   executable: /usr/bin/minimal

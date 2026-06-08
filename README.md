@@ -71,14 +71,18 @@ notes:
   - Keep this file focused on application behavior, not SELinux or AppArmor details.
 ```
 
-## Planned CLI
+## CLI
 
 ```sh
 intent validate <intent.yaml>
 intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]
 intent observe --source <audit.log> --format selinux|apparmor
 intent explain <intent.yaml>
+intent schema [--format markdown|json-schema]
 ```
+
+Schema documentation is also checked in at `docs/intent-yaml.md`, with a JSON
+Schema at `schema/intent.schema.json`.
 
 ## AppArmor Build Example
 

@@ -32,6 +32,7 @@ fn starts_and_prints_help() {
     assert!(stdout
         .contains("intent observe --source <audit.log> --format selinux|apparmor [--interactive]"));
     assert!(stdout.contains("intent explain <intent.yaml>"));
+    assert!(stdout.contains("intent schema [--format markdown|json-schema]"));
 }
 
 #[test]
@@ -236,6 +237,46 @@ fn recognizes_explain() {
     assert!(stdout.contains("Application:"));
     assert!(stdout.contains("demo"));
     assert!(stdout.contains("executable: /usr/bin/demo"));
+}
+
+#[test]
+fn recognizes_schema_markdown() {
+    let output = intent()
+        .arg("schema")
+        .output()
+        .expect("intent schema should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert!(stdout.contains("# intent.yaml"));
+    assert!(stdout.contains("application.executable"));
+    assert!(stdout.contains("SELinux:"));
+    assert!(stdout.contains("AppArmor:"));
+
+    let output = intent()
+        .args(["schema", "--format", "markdown"])
+        .output()
+        .expect("intent schema markdown should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert!(stdout.contains("## Fields"));
+    assert!(stdout.contains("Validation Summary"));
+}
+
+#[test]
+fn recognizes_schema_json_schema() {
+    let output = intent()
+        .args(["schema", "--format", "json-schema"])
+        .output()
+        .expect("intent schema json-schema should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert!(stdout.contains("\"$schema\": \"https://json-schema.org/draft/2020-12/schema\""));
+    assert!(stdout.contains("\"additionalProperties\": false"));
+    assert!(stdout.contains("\"application\""));
+    assert!(stdout.contains("\"runtimeStoragePath\""));
 }
 
 #[test]

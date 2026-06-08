@@ -1,6 +1,7 @@
 //! Public schema model for Intent files.
 
 use std::fmt;
+use std::fmt::Write as _;
 
 use serde::de::{self, Deserializer};
 use serde::Deserialize;
@@ -9,6 +10,607 @@ use crate::diagnostics::{Diagnostic, Severity};
 
 /// Current schema version understood by this crate.
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+/// Render human-facing documentation for the current `intent.yaml` schema.
+pub fn markdown_documentation() -> String {
+    let mut output = String::new();
+
+    output.push_str("# intent.yaml\n\n");
+    output.push_str(
+        "Intent files describe what a Linux application needs to do. Keep them small, readable, and focused on application behavior rather than SELinux or AppArmor policy syntax.\n\n",
+    );
+    output.push_str("## Example\n\n");
+    output.push_str("```yaml\n");
+    output.push_str("version: 1\n\n");
+    output.push_str("application:\n");
+    output.push_str("  name: my-service\n");
+    output.push_str("  description: Small service that calls an HTTPS API\n");
+    output.push_str("  executable: /usr/bin/my-service\n");
+    output.push_str("  user: my-service\n");
+    output.push_str("  group: my-service\n\n");
+    output.push_str("storage:\n");
+    output.push_str("  config:\n");
+    output.push_str("    - path: /etc/my-service\n");
+    output.push_str("      access: read\n");
+    output.push_str("  state:\n");
+    output.push_str("    - path: /var/lib/my-service\n");
+    output.push_str("      access: read-write\n\n");
+    output.push_str("network:\n");
+    output.push_str("  outbound:\n");
+    output.push_str("    - to: api.example.com\n");
+    output.push_str("      protocol: https\n\n");
+    output.push_str("ipc:\n");
+    output.push_str("  unix_sockets:\n");
+    output.push_str("    - path: /run/my-service/control.sock\n");
+    output.push_str("      mode: server\n");
+    output.push_str("```\n\n");
+
+    output.push_str("## Fields\n\n");
+    output.push_str(
+        "| Field | Required | Example | Validation | Security notes | Backend support |\n",
+    );
+    output.push_str("| --- | --- | --- | --- | --- | --- |\n");
+
+    for field in schema_fields() {
+        let _ = writeln!(
+            output,
+            "| `{}` | {} | `{}` | {} | {} | SELinux: {}<br>AppArmor: {} |",
+            field.path,
+            if field.required { "yes" } else { "no" },
+            escape_table(field.example),
+            field.validation,
+            field.security,
+            field.selinux,
+            field.apparmor,
+        );
+    }
+
+    output.push_str("\n## Validation Summary\n\n");
+    output.push_str("- Unknown fields are rejected so typos do not silently weaken policy.\n");
+    output.push_str(
+        "- Empty lists are rejected; omit a section when the application does not need it.\n",
+    );
+    output.push_str("- Paths must be absolute, normalized, one-line Linux paths without NUL bytes, `.` components, or `..` components.\n");
+    output.push_str(
+        "- Very broad storage paths such as `/`, `/etc`, `/var`, and `/usr` produce warnings.\n",
+    );
+    output.push_str("- Cache paths outside `/var/cache` and state paths outside `/var/lib` produce warnings unless they include a `justification`.\n");
+    output.push_str("- Runtime paths must be under `/run` or `/var/run`.\n");
+    output
+        .push_str("- `tcp` and `udp` network entries require `port`; `http` and `https` do not.\n");
+    output.push_str(
+        "- D-Bus names must be valid well-known names such as `org.example.Service`.\n\n",
+    );
+    output.push_str("## Backend Notes\n\n");
+    output.push_str("- SELinux output currently includes a type-enforcement module and file-context suggestions for executable and storage paths.\n");
+    output.push_str("- AppArmor output currently includes a profile with file, network, Unix socket, D-Bus, and capability rules where supported by the schema.\n");
+    output.push_str("- Intent may accept high-level fields before every backend can express them equally. Backend notes above call out gaps.\n");
+
+    output
+}
+
+/// Render a JSON Schema for the current `intent.yaml` schema.
+pub fn json_schema() -> &'static str {
+    r##"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://intent.dev/schema/intent.schema.json",
+  "title": "Intent Linux security policy intent",
+  "description": "Plain YAML schema for describing Linux application security intent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "application"],
+  "properties": {
+    "version": {
+      "description": "Intent schema version.",
+      "type": "integer",
+      "const": 1
+    },
+    "application": {
+      "description": "Application identity and launch context.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "executable"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable application name used in diagnostics and generated policy names."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short maintainer-facing description."
+        },
+        "executable": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/",
+          "description": "Absolute path to the executable that should run under this policy."
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unix user the application normally runs as."
+        },
+        "group": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unix group the application normally runs as."
+        }
+      }
+    },
+    "storage": {
+      "description": "Files and directories the application expects to use.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/storagePath" },
+          "description": "Long-lived administrator or package-provided configuration."
+        },
+        "cache": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/storagePath" },
+          "description": "Disposable data the application can rebuild."
+        },
+        "state": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/storagePath" },
+          "description": "Persistent application-owned data."
+        },
+        "runtime": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/runtimeStoragePath" },
+          "description": "Short-lived data such as pid files and sockets under /run or /var/run."
+        }
+      }
+    },
+    "network": {
+      "description": "Network access requested by the application.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outbound": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/outboundNetwork" },
+          "description": "Outbound connections initiated by the application."
+        }
+      }
+    },
+    "ipc": {
+      "description": "Local inter-process communication requested by the application.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unix_sockets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/unixSocket" },
+          "description": "Unix domain sockets created or contacted by the application."
+        },
+        "dbus": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "system": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "owns": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "$ref": "#/$defs/dbusName" },
+                  "description": "Well-known system-bus names provided by the application."
+                },
+                "talks_to": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "$ref": "#/$defs/dbusName" },
+                  "description": "Well-known system-bus services called by the application."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+      },
+      "description": "Linux capabilities by friendly kebab-case name."
+    },
+    "notes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Free-form maintainer notes. Not compiled into policy."
+    }
+  },
+  "$defs": {
+    "storagePath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "access"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/",
+          "description": "Absolute file or directory path."
+        },
+        "access": {
+          "type": "string",
+          "enum": ["read", "read-write"],
+          "description": "High-level access mode."
+        },
+        "justification": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human explanation for storage outside the conventional location."
+        }
+      }
+    },
+    "runtimeStoragePath": {
+      "allOf": [
+        { "$ref": "#/$defs/storagePath" },
+        {
+          "properties": {
+            "path": {
+              "pattern": "^(/run|/var/run)(/|$)"
+            }
+          }
+        }
+      ]
+    },
+    "outboundNetwork": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["to", "protocol"],
+      "properties": {
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "description": "DNS name, host, network, or service label for the destination."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["http", "https", "tcp", "udp"]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "protocol": { "enum": ["tcp", "udp"] }
+            },
+            "required": ["protocol"]
+          },
+          "then": {
+            "required": ["port"]
+          }
+        }
+      ]
+    },
+    "unixSocket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "mode"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["server", "client"]
+        }
+      }
+    },
+    "dbusName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z_-][A-Za-z0-9_-]*(\\.[A-Za-z_-][A-Za-z0-9_-]*)+$"
+    }
+  }
+}
+"##
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SchemaField {
+    path: &'static str,
+    required: bool,
+    example: &'static str,
+    validation: &'static str,
+    security: &'static str,
+    selinux: &'static str,
+    apparmor: &'static str,
+}
+
+fn schema_fields() -> &'static [SchemaField] {
+    &[
+        SchemaField {
+            path: "version",
+            required: true,
+            example: "1",
+            validation: "Must equal the current schema version, 1.",
+            security: "Makes future schema changes explicit during review.",
+            selinux: "Used only by Intent validation.",
+            apparmor: "Used only by Intent validation.",
+        },
+        SchemaField {
+            path: "application",
+            required: true,
+            example: "application: ...",
+            validation: "Object. Unknown fields are rejected.",
+            security: "Defines the process identity Intent protects.",
+            selinux: "Drives module, domain, and executable type names.",
+            apparmor: "Drives profile name and executable attachment.",
+        },
+        SchemaField {
+            path: "application.name",
+            required: true,
+            example: "my-service",
+            validation: "Non-empty string.",
+            security:
+                "Use a stable package or service name so generated policy remains reviewable.",
+            selinux: "Used in generated type and module names.",
+            apparmor: "Used as the generated profile name.",
+        },
+        SchemaField {
+            path: "application.description",
+            required: false,
+            example: "Small service that calls an HTTPS API",
+            validation: "Non-empty string when present.",
+            security: "Documentation for reviewers; not a permission grant.",
+            selinux: "Not compiled.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
+            path: "application.executable",
+            required: true,
+            example: "/usr/bin/my-service",
+            validation: "Absolute, normalized, one-line path.",
+            security: "Choose the real executable entry point, not a broad directory.",
+            selinux: "Labels the executable and creates the application domain transition target.",
+            apparmor: "Attaches the profile to this executable path.",
+        },
+        SchemaField {
+            path: "application.user",
+            required: false,
+            example: "my-service",
+            validation: "Non-empty string when present.",
+            security: "Documents the expected Unix account; omit for per-user apps.",
+            selinux: "Documented in generated comments only.",
+            apparmor: "Documented in generated comments only.",
+        },
+        SchemaField {
+            path: "application.group",
+            required: false,
+            example: "my-service",
+            validation: "Non-empty string when present.",
+            security: "Documents the expected Unix group; omit when not fixed.",
+            selinux: "Documented in generated comments only.",
+            apparmor: "Documented in generated comments only.",
+        },
+        SchemaField {
+            path: "storage",
+            required: false,
+            example: "storage: ...",
+            validation: "Object. Omit when no storage access is needed.",
+            security: "Declare storage by purpose so reviewers can spot overbroad paths.",
+            selinux: "Generates file allow rules and file-context suggestions.",
+            apparmor: "Generates path rules.",
+        },
+        SchemaField {
+            path: "storage.config[]",
+            required: false,
+            example: "{ path: /etc/my-service, access: read }",
+            validation: "Non-empty list of storage entries.",
+            security: "Use read-only access for administrator or package-provided configuration.",
+            selinux: "Generates read or write file permissions for declared paths.",
+            apparmor: "Generates `r` or `rw` path permissions.",
+        },
+        SchemaField {
+            path: "storage.cache[]",
+            required: false,
+            example: "{ path: /var/cache/my-service, access: read-write }",
+            validation: "Non-empty list. Warns outside /var/cache unless justified.",
+            security: "Cache should be disposable and narrow to the application.",
+            selinux: "Generates file permissions and file contexts for cache paths.",
+            apparmor: "Generates path permissions.",
+        },
+        SchemaField {
+            path: "storage.state[]",
+            required: false,
+            example: "{ path: /var/lib/my-service, access: read-write }",
+            validation: "Non-empty list. Warns outside /var/lib unless justified.",
+            security: "State is persistent application-owned data; keep it application-specific.",
+            selinux: "Generates file permissions and file contexts for state paths.",
+            apparmor: "Generates path permissions.",
+        },
+        SchemaField {
+            path: "storage.runtime[]",
+            required: false,
+            example: "{ path: /run/my-service, access: read-write }",
+            validation: "Non-empty list. Path must be under /run or /var/run.",
+            security: "Runtime paths should be short-lived sockets, pid files, and similar data.",
+            selinux: "Generates file permissions and file contexts for runtime paths.",
+            apparmor: "Generates path permissions.",
+        },
+        SchemaField {
+            path: "storage.*[].path",
+            required: true,
+            example: "/var/lib/my-service",
+            validation: "Absolute, normalized, one-line path; broad roots warn.",
+            security: "Declare the narrowest file or directory the application needs.",
+            selinux: "Used in file-context suggestions and file allow rules.",
+            apparmor: "Used directly in path rules.",
+        },
+        SchemaField {
+            path: "storage.*[].access",
+            required: true,
+            example: "read-write",
+            validation: "Must be read or read-write.",
+            security: "Prefer read unless the application must create or modify data.",
+            selinux: "Maps to read-only or read/write file permissions.",
+            apparmor: "Maps to `r` or `rw` path permissions.",
+        },
+        SchemaField {
+            path: "storage.*[].justification",
+            required: false,
+            example: "vendor package layout",
+            validation: "Non-empty string when present.",
+            security:
+                "Explain exceptions such as cache outside /var/cache or state outside /var/lib.",
+            selinux: "Not compiled.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
+            path: "network",
+            required: false,
+            example: "network: ...",
+            validation: "Object. Omit when no network access is needed.",
+            security: "Declare only outbound destinations the application initiates.",
+            selinux: "Generates coarse network permissions for supported protocols.",
+            apparmor: "Generates network rules for supported protocols.",
+        },
+        SchemaField {
+            path: "network.outbound[]",
+            required: false,
+            example: "{ to: api.example.com, protocol: https }",
+            validation: "Non-empty list of outbound entries.",
+            security: "Keep destinations specific enough for human review.",
+            selinux: "Destination is documented; protocol influences generated allow rules.",
+            apparmor: "Protocol influences generated network rules; destination is documented.",
+        },
+        SchemaField {
+            path: "network.outbound[].to",
+            required: true,
+            example: "api.example.com",
+            validation: "Non-empty string.",
+            security: "Use a meaningful DNS name, host, network, or service label.",
+            selinux: "Documented in generated comments.",
+            apparmor: "Documented in generated comments.",
+        },
+        SchemaField {
+            path: "network.outbound[].protocol",
+            required: true,
+            example: "https",
+            validation: "Must be http, https, tcp, or udp.",
+            security: "Choose the narrowest protocol that describes the connection.",
+            selinux: "Maps to generated network permission templates.",
+            apparmor: "Maps to `network inet tcp` or `network inet udp` style rules.",
+        },
+        SchemaField {
+            path: "network.outbound[].port",
+            required: false,
+            example: "443",
+            validation: "1 through 65535. Required for tcp and udp.",
+            security: "Use explicit ports for raw TCP/UDP to avoid broad network access.",
+            selinux: "Documented; port-level confinement depends on policy environment.",
+            apparmor: "Documented; AppArmor network rules are protocol-oriented.",
+        },
+        SchemaField {
+            path: "ipc",
+            required: false,
+            example: "ipc: ...",
+            validation: "Object. Omit when no local IPC access is needed.",
+            security: "Local IPC often crosses trust boundaries; keep entries intentional.",
+            selinux: "Generates rules for supported IPC declarations.",
+            apparmor: "Generates Unix socket and D-Bus rules.",
+        },
+        SchemaField {
+            path: "ipc.unix_sockets[]",
+            required: false,
+            example: "{ path: /run/my-service/control.sock, mode: server }",
+            validation: "Non-empty list of socket entries.",
+            security: "Declare whether the application listens or connects.",
+            selinux: "Generates Unix socket-related allow rules where expressible.",
+            apparmor: "Generates Unix socket rules.",
+        },
+        SchemaField {
+            path: "ipc.unix_sockets[].path",
+            required: true,
+            example: "/run/my-service/control.sock",
+            validation: "Absolute, normalized, one-line path.",
+            security: "Use an application-specific socket path when the application owns it.",
+            selinux: "Used in file-context suggestions and socket permissions.",
+            apparmor: "Used in Unix socket path rules.",
+        },
+        SchemaField {
+            path: "ipc.unix_sockets[].mode",
+            required: true,
+            example: "server",
+            validation: "Must be server or client.",
+            security: "Server means the app creates/listens; client means it connects.",
+            selinux: "Guides generated socket permissions.",
+            apparmor: "Guides generated Unix socket permissions.",
+        },
+        SchemaField {
+            path: "ipc.dbus.system.owns[]",
+            required: false,
+            example: "org.example.Service",
+            validation: "Non-empty valid D-Bus well-known name.",
+            security: "Owning a bus name exposes a service surface; keep names explicit.",
+            selinux: "Documented for review; direct D-Bus confinement is limited.",
+            apparmor: "Generates D-Bus own rules.",
+        },
+        SchemaField {
+            path: "ipc.dbus.system.talks_to[]",
+            required: false,
+            example: "org.freedesktop.DBus",
+            validation: "Non-empty valid D-Bus well-known name.",
+            security: "Only list services the application is expected to call.",
+            selinux: "Documented for review; direct D-Bus confinement is limited.",
+            apparmor: "Generates D-Bus talk rules.",
+        },
+        SchemaField {
+            path: "capabilities[]",
+            required: false,
+            example: "net-bind-service",
+            validation: "Non-empty kebab-case capability name.",
+            security:
+                "Capabilities are powerful; keep the list short and prefer high-level intents.",
+            selinux: "Generates capability allow rules for supported names.",
+            apparmor: "Generates capability rules.",
+        },
+        SchemaField {
+            path: "notes[]",
+            required: false,
+            example: "Example policy only; paths may differ by distribution.",
+            validation: "Non-empty string.",
+            security: "Human review notes only; not a permission grant.",
+            selinux: "Not compiled.",
+            apparmor: "Not compiled.",
+        },
+    ]
+}
+
+fn escape_table(value: &str) -> String {
+    value.replace('|', "\\|")
+}
 
 /// Top-level intent document.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -920,5 +1522,20 @@ unexpected: true
         .expect_err("unknown field should fail");
 
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn generated_markdown_matches_checked_in_docs() {
+        assert_eq!(
+            markdown_documentation(),
+            include_str!("../docs/intent-yaml.md")
+        );
+    }
+
+    #[test]
+    fn generated_json_schema_matches_checked_in_schema() {
+        serde_yaml::from_str::<serde_yaml::Value>(json_schema())
+            .expect("json schema should parse as yaml/json");
+        assert_eq!(json_schema(), include_str!("../schema/intent.schema.json"));
     }
 }
