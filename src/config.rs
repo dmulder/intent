@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::diagnostics::Diagnostic;
+use crate::ir::PolicyIr;
 use crate::schema::{IntentDocument, ValidationError, ValidationOptions};
 
 /// Parsed Intent configuration.
@@ -14,6 +15,8 @@ pub struct IntentConfig {
     pub source: PathBuf,
     /// Parsed and validated intent document.
     pub document: IntentDocument,
+    /// Normalized policy intent consumed by compiler backends.
+    pub ir: PolicyIr,
 }
 
 impl IntentConfig {
@@ -80,7 +83,13 @@ impl IntentConfig {
             });
         }
 
-        Ok(Self { source, document })
+        let ir = PolicyIr::from_document(&document);
+
+        Ok(Self {
+            source,
+            document,
+            ir,
+        })
     }
 }
 

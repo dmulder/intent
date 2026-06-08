@@ -4,19 +4,19 @@
 # application.executable: executable entry point.
 /usr/libexec/himmelblaud -- gen_context(system_u:object_r:himmelblaud_exec_t,s0)
 
-# storage.config[0]: label /etc/himmelblaud.
+# config paths[0]: label /etc/himmelblaud.
 /etc/himmelblaud(/.*)? gen_context(system_u:object_r:himmelblaud_config_t,s0)
 
-# storage.cache[0]: label /var/cache/himmelblaud.
+# cache paths[0]: label /var/cache/himmelblaud.
 /var/cache/himmelblaud(/.*)? gen_context(system_u:object_r:himmelblaud_cache_t,s0)
 
-# storage.state[0]: label /var/lib/himmelblaud.
+# state paths[0]: label /var/lib/himmelblaud.
 /var/lib/himmelblaud(/.*)? gen_context(system_u:object_r:himmelblaud_state_t,s0)
 
-# storage.runtime[0]: label /run/himmelblaud.
+# runtime paths[0]: label /run/himmelblaud.
 /run/himmelblaud(/.*)? gen_context(system_u:object_r:himmelblaud_runtime_t,s0)
 
-# ipc.unix_sockets[0]: label server socket /run/himmelblaud/socket.
+# Unix socket[0]: label server socket /run/himmelblaud/socket.
 /run/himmelblaud/socket -s gen_context(system_u:object_r:himmelblaud_runtime_t,s0)
 
-# WARNING: ipc.unix_sockets[1] is a client socket; Intent will not relabel peer-owned path /run/systemd/resolve/io.systemd.Resolve.
+# WARNING: Unix socket[1] is a client socket; Intent will not relabel peer-owned path /run/systemd/resolve/io.systemd.Resolve.

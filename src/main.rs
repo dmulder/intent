@@ -204,7 +204,7 @@ fn run(command: Cli) -> Result<(), String> {
         } => {
             let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
             if let Some(output) = output {
-                let outputs = build_file_outputs(&config.document, target);
+                let outputs = build_file_outputs(&config.ir, target);
                 fs::create_dir_all(&output).map_err(|err| {
                     format!(
                         "failed to create output directory {}: {err}",
@@ -218,7 +218,7 @@ fn run(command: Cli) -> Result<(), String> {
                     println!("Wrote {}", path.display());
                 }
             } else {
-                let outputs = build_stdout_outputs(&config.document, target);
+                let outputs = build_stdout_outputs(&config.ir, target);
                 for (index, (_file_name, contents)) in outputs.into_iter().enumerate() {
                     if index > 0 {
                         println!();
@@ -242,11 +242,7 @@ fn run(command: Cli) -> Result<(), String> {
         }
         Cli::Explain { intent_path } => {
             let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
-            println!(
-                "Explain placeholder: {} describes application '{}' in higher-level security intent terms.",
-                config.source.display(),
-                config.document.application.name
-            );
+            print!("{}", config.ir.explain());
         }
         Cli::Help => println!("{}", usage()),
     }
@@ -264,63 +260,57 @@ Usage:
   intent explain <intent.yaml>"
 }
 
-fn build_stdout_outputs(
-    document: &intent::schema::IntentDocument,
-    target: Target,
-) -> Vec<(String, String)> {
+fn build_stdout_outputs(ir: &intent::ir::PolicyIr, target: Target) -> Vec<(String, String)> {
     match target {
         Target::Selinux => vec![(
-            selinux_compiler::module_file_name(document),
-            selinux_compiler::compile(document),
+            selinux_compiler::module_file_name(ir),
+            selinux_compiler::compile(ir),
         )],
         Target::AppArmor => vec![(
-            apparmor_compiler::profile_file_name(document),
-            apparmor_compiler::compile(document),
+            apparmor_compiler::profile_file_name(ir),
+            apparmor_compiler::compile(ir),
         )],
         Target::All => vec![
             (
-                selinux_compiler::module_file_name(document),
-                selinux_compiler::compile(document),
+                selinux_compiler::module_file_name(ir),
+                selinux_compiler::compile(ir),
             ),
             (
-                apparmor_compiler::profile_file_name(document),
-                apparmor_compiler::compile(document),
+                apparmor_compiler::profile_file_name(ir),
+                apparmor_compiler::compile(ir),
             ),
         ],
     }
 }
 
-fn build_file_outputs(
-    document: &intent::schema::IntentDocument,
-    target: Target,
-) -> Vec<(String, String)> {
+fn build_file_outputs(ir: &intent::ir::PolicyIr, target: Target) -> Vec<(String, String)> {
     match target {
         Target::Selinux => vec![
             (
-                selinux_compiler::module_file_name(document),
-                selinux_compiler::compile(document),
+                selinux_compiler::module_file_name(ir),
+                selinux_compiler::compile(ir),
             ),
             (
-                selinux_compiler::file_contexts_file_name(document),
-                selinux_compiler::file_contexts(document),
+                selinux_compiler::file_contexts_file_name(ir),
+                selinux_compiler::file_contexts(ir),
             ),
         ],
         Target::AppArmor => vec![(
-            apparmor_compiler::profile_file_name(document),
-            apparmor_compiler::compile(document),
+            apparmor_compiler::profile_file_name(ir),
+            apparmor_compiler::compile(ir),
         )],
         Target::All => vec![
             (
-                selinux_compiler::module_file_name(document),
-                selinux_compiler::compile(document),
+                selinux_compiler::module_file_name(ir),
+                selinux_compiler::compile(ir),
             ),
             (
-                selinux_compiler::file_contexts_file_name(document),
-                selinux_compiler::file_contexts(document),
+                selinux_compiler::file_contexts_file_name(ir),
+                selinux_compiler::file_contexts(ir),
             ),
             (
-                apparmor_compiler::profile_file_name(document),
-                apparmor_compiler::compile(document),
+                apparmor_compiler::profile_file_name(ir),
+                apparmor_compiler::compile(ir),
             ),
         ],
     }

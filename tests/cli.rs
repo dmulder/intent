@@ -161,8 +161,10 @@ fn recognizes_explain() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
-    assert!(stdout.contains("Explain placeholder"));
+    assert!(stdout.contains("Intent IR"));
+    assert!(stdout.contains("Application:"));
     assert!(stdout.contains("demo"));
+    assert!(stdout.contains("executable: /usr/bin/demo"));
 }
 
 #[test]

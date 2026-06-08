@@ -6,46 +6,46 @@ profile himmelblaud /usr/libexec/himmelblaud {
   # application.executable: profile attachment and executable read access.
   /usr/libexec/himmelblaud r,
 
-  # storage.config[0]: read access to /etc/himmelblaud.
+  # config paths[0]: read access to /etc/himmelblaud.
   /etc/himmelblaud r,
   /etc/himmelblaud/** r,
 
-  # storage.cache[0]: read-write access to /var/cache/himmelblaud.
+  # cache paths[0]: read-write access to /var/cache/himmelblaud.
   /var/cache/himmelblaud rwk,
   /var/cache/himmelblaud/** rwk,
 
-  # storage.state[0]: read-write access to /var/lib/himmelblaud.
+  # state paths[0]: read-write access to /var/lib/himmelblaud.
   /var/lib/himmelblaud rwk,
   /var/lib/himmelblaud/** rwk,
 
-  # storage.runtime[0]: read-write access to /run/himmelblaud.
+  # runtime paths[0]: read-write access to /run/himmelblaud.
   /run/himmelblaud rwk,
   /run/himmelblaud/** rwk,
 
-  # network.outbound[0]: outbound https connection to login.microsoftonline.com.
+  # outbound network[0]: outbound https connection to login.microsoftonline.com:443.
   network inet stream,
   network inet6 stream,
 
-  # network.outbound[1]: outbound tcp connection to metadata.google.internal:80.
+  # outbound network[1]: outbound tcp connection to metadata.google.internal:80.
   network inet stream,
   network inet6 stream,
 
-  # ipc.unix_sockets[0]: create and use server socket /run/himmelblaud/socket.
+  # Unix socket[0]: create and use server socket /run/himmelblaud/socket.
   unix (create, bind, listen, accept, send, receive) type=stream addr="/run/himmelblaud/socket",
   /run/himmelblaud/socket rw,
 
-  # ipc.unix_sockets[1]: connect to client socket /run/systemd/resolve/io.systemd.Resolve.
+  # Unix socket[1]: connect to client socket /run/systemd/resolve/io.systemd.Resolve.
   unix (connect, send, receive) type=stream peer=(addr="/run/systemd/resolve/io.systemd.Resolve"),
   /run/systemd/resolve/io.systemd.Resolve rw,
 
-  # ipc.dbus.system.owns[0]: own system bus name com.microsoft.himmelblaud.
+  # D-Bus ownership[0]: own system bus name com.microsoft.himmelblaud.
   dbus bind bus=system name="com.microsoft.himmelblaud",
 
-  # ipc.dbus.system.talks_to[0]: talk to system bus service org.freedesktop.DBus.
+  # D-Bus communication[0]: talk to system bus service org.freedesktop.DBus.
   dbus send bus=system peer=(name="org.freedesktop.DBus"),
   dbus receive bus=system peer=(name="org.freedesktop.DBus"),
 
-  # ipc.dbus.system.talks_to[1]: talk to system bus service org.freedesktop.resolve1.
+  # D-Bus communication[1]: talk to system bus service org.freedesktop.resolve1.
   dbus send bus=system peer=(name="org.freedesktop.resolve1"),
   dbus receive bus=system peer=(name="org.freedesktop.resolve1"),
 
