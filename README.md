@@ -94,6 +94,20 @@ Write the generated profile to `build/himmelblaud.apparmor`:
 intent build examples/himmelblaud.intent.yaml --target apparmor --output build/
 ```
 
+## SELinux Build Example
+
+Print a reviewable SELinux type-enforcement module to stdout:
+
+```sh
+intent build examples/himmelblaud.intent.yaml --target selinux
+```
+
+Write the generated module and suggested file contexts to `build/himmelblaud.te` and `build/himmelblaud.fc`:
+
+```sh
+intent build examples/himmelblaud.intent.yaml --target selinux --output build/
+```
+
 ## Development
 
 Build and test the project with Cargo:

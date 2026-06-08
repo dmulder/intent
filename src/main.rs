@@ -203,8 +203,8 @@ fn run(command: Cli) -> Result<(), String> {
             output,
         } => {
             let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
-            let outputs = build_outputs(&config.document, target);
             if let Some(output) = output {
+                let outputs = build_file_outputs(&config.document, target);
                 fs::create_dir_all(&output).map_err(|err| {
                     format!(
                         "failed to create output directory {}: {err}",
@@ -218,6 +218,7 @@ fn run(command: Cli) -> Result<(), String> {
                     println!("Wrote {}", path.display());
                 }
             } else {
+                let outputs = build_stdout_outputs(&config.document, target);
                 for (index, (_file_name, contents)) in outputs.into_iter().enumerate() {
                     if index > 0 {
                         println!();
@@ -263,14 +264,14 @@ Usage:
   intent explain <intent.yaml>"
 }
 
-fn build_outputs(
+fn build_stdout_outputs(
     document: &intent::schema::IntentDocument,
     target: Target,
 ) -> Vec<(String, String)> {
     match target {
         Target::Selinux => vec![(
-            format!("{}.selinux", document.application.name),
-            selinux_compiler::compile_placeholder(document),
+            selinux_compiler::module_file_name(document),
+            selinux_compiler::compile(document),
         )],
         Target::AppArmor => vec![(
             apparmor_compiler::profile_file_name(document),
@@ -278,8 +279,44 @@ fn build_outputs(
         )],
         Target::All => vec![
             (
-                format!("{}.selinux", document.application.name),
-                selinux_compiler::compile_placeholder(document),
+                selinux_compiler::module_file_name(document),
+                selinux_compiler::compile(document),
+            ),
+            (
+                apparmor_compiler::profile_file_name(document),
+                apparmor_compiler::compile(document),
+            ),
+        ],
+    }
+}
+
+fn build_file_outputs(
+    document: &intent::schema::IntentDocument,
+    target: Target,
+) -> Vec<(String, String)> {
+    match target {
+        Target::Selinux => vec![
+            (
+                selinux_compiler::module_file_name(document),
+                selinux_compiler::compile(document),
+            ),
+            (
+                selinux_compiler::file_contexts_file_name(document),
+                selinux_compiler::file_contexts(document),
+            ),
+        ],
+        Target::AppArmor => vec![(
+            apparmor_compiler::profile_file_name(document),
+            apparmor_compiler::compile(document),
+        )],
+        Target::All => vec![
+            (
+                selinux_compiler::module_file_name(document),
+                selinux_compiler::compile(document),
+            ),
+            (
+                selinux_compiler::file_contexts_file_name(document),
+                selinux_compiler::file_contexts(document),
             ),
             (
                 apparmor_compiler::profile_file_name(document),
