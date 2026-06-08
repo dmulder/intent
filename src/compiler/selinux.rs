@@ -55,6 +55,7 @@ pub fn compile(ir: &PolicyIr) -> String {
     push_unix_socket_rules(&mut policy, &ir.unix_sockets, &names);
     push_dbus_warnings(&mut policy, ir);
     push_capability_rules(&mut policy, ir, &names);
+    push_manual_policy(&mut policy, &ir.manual_extensions.selinux_policy);
 
     policy
 }
@@ -448,6 +449,33 @@ fn push_capability_rules(policy: &mut String, ir: &PolicyIr, names: &Names) {
                 names.domain_type, capability.linux_name
             ),
         );
+    }
+}
+
+fn push_manual_policy(policy: &mut String, fragments: &[String]) {
+    if fragments.is_empty() {
+        return;
+    }
+
+    push_line(policy, "");
+    push_line(policy, "########################################");
+    push_line(policy, "# Manual SELinux Policy Extensions");
+    push_line(policy, "");
+    push_line(
+        policy,
+        "# These rules came from extensions.selinux.policy and should be temporary until Intent has native support.",
+    );
+
+    for (index, fragment) in fragments.iter().enumerate() {
+        push_line(policy, "");
+        push_line(
+            policy,
+            &format!("# extensions.selinux.policy[{index}]: manual policy."),
+        );
+
+        for line in fragment.trim().lines() {
+            push_line(policy, line.trim_end());
+        }
     }
 }
 

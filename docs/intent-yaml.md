@@ -64,6 +64,9 @@ ipc:
 | `ipc.dbus.system.owns[]` | no | `org.example.Service` | Non-empty valid D-Bus well-known name. | Owning a bus name exposes a service surface; keep names explicit. | SELinux: Documented for review; direct D-Bus confinement is limited.<br>AppArmor: Generates D-Bus own rules. |
 | `ipc.dbus.system.talks_to[]` | no | `org.freedesktop.DBus` | Non-empty valid D-Bus well-known name. | Only list services the application is expected to call. | SELinux: Documented for review; direct D-Bus confinement is limited.<br>AppArmor: Generates D-Bus talk rules. |
 | `capabilities[]` | no | `net-bind-service` | Non-empty kebab-case capability name. | Capabilities are powerful; keep the list short and prefer high-level intents. | SELinux: Generates capability allow rules for supported names.<br>AppArmor: Generates capability rules. |
+| `extensions` | no | `extensions: ...` | Object. Unknown extension blocks produce warnings. | Backend-specific escape hatches should be temporary and reviewed as raw policy. | SELinux: Contains optional SELinux policy fragments.<br>AppArmor: Contains optional AppArmor profile-body rules. |
+| `extensions.selinux.policy[]` | no | `allow mydaemon_t self:capability sys_ptrace;` | Non-empty SELinux policy fragment with complete statements where Intent can check them. | Raw SELinux policy bypasses Intent's abstraction and should be replaced by native schema support when possible. | SELinux: Inserted into a manual policy extension section of the generated type-enforcement module.<br>AppArmor: Not compiled. |
+| `extensions.apparmor.rules[]` | no | `capability sys_ptrace,` | Non-empty AppArmor profile-body rule fragment; rules should terminate with commas. | Raw AppArmor rules bypass Intent's abstraction and should be replaced by native schema support when possible. | SELinux: Not compiled.<br>AppArmor: Inserted into a manual rule extension section inside the generated profile. |
 | `notes[]` | no | `Example policy only; paths may differ by distribution.` | Non-empty string. | Human review notes only; not a permission grant. | SELinux: Not compiled.<br>AppArmor: Not compiled. |
 
 ## Validation Summary
@@ -76,9 +79,11 @@ ipc:
 - Runtime paths must be under `/run` or `/var/run`.
 - `tcp` and `udp` network entries require `port`; `http` and `https` do not.
 - D-Bus names must be valid well-known names such as `org.example.Service`.
+- Unknown extension blocks produce warnings. Known extension fragments are preserved and compiled into their backend-specific policy section.
 
 ## Backend Notes
 
 - SELinux output currently includes a type-enforcement module and file-context suggestions for executable and storage paths.
 - AppArmor output currently includes a profile with file, network, Unix socket, D-Bus, and capability rules where supported by the schema.
+- Escape hatches under `extensions` are backend-specific and should be treated as temporary workarounds until Intent gains native fields for the behavior.
 - Intent may accept high-level fields before every backend can express them equally. Backend notes above call out gaps.

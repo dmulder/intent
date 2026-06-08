@@ -122,6 +122,30 @@ notes:
   - Keep this file focused on application behavior, not SELinux or AppArmor details.
 ```
 
+## Manual policy escape hatches
+
+Intent includes explicit backend escape hatches for uncommon cases that the
+schema cannot model yet:
+
+```yaml
+extensions:
+  selinux:
+    policy:
+      - |
+        allow mydaemon_t self:capability sys_ptrace;
+
+  apparmor:
+    rules:
+      - |
+        capability sys_ptrace,
+```
+
+Manual fragments are preserved when Intent loads and saves YAML, validated for
+basic backend syntax where possible, and inserted into the generated SELinux or
+AppArmor policy section with comments that identify them as manual extensions.
+Use them as temporary workarounds until Intent gains native fields for the
+behavior.
+
 Validate a document:
 
 ```sh

@@ -138,6 +138,130 @@ fn selinux_generated_output_matches_snapshots() {
 }
 
 #[test]
+fn manual_policy_extensions_round_trip_and_compile_into_backend_sections() {
+    let config = IntentConfig::from_yaml(
+        PathBuf::from("escape.intent.yaml"),
+        r#"
+version: 1
+
+application:
+  name: mydaemon
+  executable: /usr/bin/mydaemon
+
+extensions:
+  selinux:
+    policy:
+      - |
+        allow mydaemon_t self:capability sys_ptrace;
+  apparmor:
+    rules:
+      - |
+        capability sys_ptrace,
+"#,
+    )
+    .expect("manual extensions should load");
+
+    let rendered =
+        serde_yaml::to_string(&config.document).expect("intent document should serialize");
+    let reparsed =
+        serde_yaml::from_str::<IntentDocument>(&rendered).expect("serialized document should load");
+    assert_eq!(
+        reparsed.extensions.selinux.policy[0].trim(),
+        "allow mydaemon_t self:capability sys_ptrace;"
+    );
+    assert_eq!(
+        reparsed.extensions.apparmor.rules[0].trim(),
+        "capability sys_ptrace,"
+    );
+
+    let selinux_output = selinux::compile(&config.ir);
+    assert!(selinux_output.contains("# Manual SELinux Policy Extensions"));
+    assert!(selinux_output.contains("# extensions.selinux.policy[0]: manual policy."));
+    assert!(selinux_output.contains("allow mydaemon_t self:capability sys_ptrace;"));
+
+    let apparmor_output = apparmor::compile(&config.ir);
+    assert!(apparmor_output.contains("  # Manual AppArmor rule extensions."));
+    assert!(apparmor_output.contains("  # extensions.apparmor.rules[0]: manual policy."));
+    assert!(apparmor_output.contains("  capability sys_ptrace,"));
+
+    let manual_offset = apparmor_output
+        .find("Manual AppArmor rule extensions")
+        .expect("manual AppArmor section should be present");
+    let closing_offset = apparmor_output
+        .rfind("\n}")
+        .expect("profile closing brace should be present");
+    assert!(manual_offset < closing_offset);
+}
+
+#[test]
+fn manual_policy_extensions_are_syntax_checked_when_possible() {
+    let error = IntentConfig::from_yaml(
+        PathBuf::from("invalid-escape.intent.yaml"),
+        r#"
+version: 1
+
+application:
+  name: mydaemon
+  executable: /usr/bin/mydaemon
+
+extensions:
+  selinux:
+    policy:
+      - allow mydaemon_t self:capability sys_ptrace
+  apparmor:
+    rules:
+      - capability sys_ptrace
+"#,
+    )
+    .expect_err("invalid manual fragments should fail validation");
+
+    let ConfigError::Validation { source, .. } = error else {
+        panic!("expected validation error, got {error}");
+    };
+    let message = source.to_string();
+    assert!(message.contains("extensions.selinux.policy[0] must contain complete SELinux"));
+    assert!(message.contains("extensions.apparmor.rules[0] must contain complete AppArmor"));
+}
+
+#[test]
+fn unknown_extension_blocks_warn_but_are_preserved() {
+    let document = serde_yaml::from_str::<IntentDocument>(
+        r#"
+version: 1
+
+application:
+  name: demo
+  executable: /usr/bin/demo
+
+extensions:
+  selinux:
+    module_options:
+      custom: true
+  bpf:
+    programs:
+      - demo-filter
+"#,
+    )
+    .expect("unknown extension blocks should parse");
+
+    let report = document
+        .validate_with_options(Default::default())
+        .expect("unknown extensions should be warnings by default");
+    let message = render_diagnostics(&report.diagnostics);
+    assert!(message.contains("warning: extensions.bpf is not recognized"));
+    assert!(message.contains("warning: extensions.selinux.module_options is not recognized"));
+
+    let rendered = serde_yaml::to_string(&document).expect("document should serialize");
+    assert!(rendered.contains("bpf:"));
+    assert!(rendered.contains("module_options:"));
+    assert!(document
+        .validate_with_options(intent::schema::ValidationOptions {
+            deny_warnings: true
+        })
+        .is_err());
+}
+
+#[test]
 fn selinux_audit_parsing_matches_observe_snapshot() {
     let log = include_str!("fixtures/selinux_audit.log");
     let events = selinux_audit::parse_audit_log(log);
@@ -191,6 +315,7 @@ fn example_configs_parse_and_normalize() {
     for path in [
         "examples/minimal.intent.yaml",
         "examples/himmelblaud.intent.yaml",
+        "examples/escape-hatches.intent.yaml",
         "examples/himmelblau/intent.yaml",
     ] {
         let config = IntentConfig::from_path(path)

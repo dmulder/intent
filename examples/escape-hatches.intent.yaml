@@ -1,0 +1,19 @@
+# Escape hatches are for backend-specific policy that Intent cannot yet model.
+# Treat these fragments as temporary and replace them with native Intent fields
+# when the schema grows enough to describe the behavior directly.
+version: 1
+
+application:
+  name: mydaemon
+  executable: /usr/bin/mydaemon
+
+extensions:
+  selinux:
+    policy:
+      - |
+        allow mydaemon_t self:capability sys_ptrace;
+
+  apparmor:
+    rules:
+      - |
+        capability sys_ptrace,

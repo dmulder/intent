@@ -41,6 +41,7 @@ pub fn compile(ir: &PolicyIr) -> String {
     push_unix_socket_rules(&mut profile, &ir.unix_sockets);
     push_dbus_rules(&mut profile, ir);
     push_capability_rules(&mut profile, ir);
+    push_manual_rules(&mut profile, &ir.manual_extensions.apparmor_rules);
 
     push_line(&mut profile, "}");
 
@@ -201,6 +202,35 @@ fn push_capability_rules(profile: &mut String, ir: &PolicyIr) {
             ),
         );
         push_line(profile, &format!("  capability {},", capability.linux_name));
+    }
+}
+
+fn push_manual_rules(profile: &mut String, fragments: &[String]) {
+    if fragments.is_empty() {
+        return;
+    }
+
+    push_line(profile, "");
+    push_line(profile, "  # Manual AppArmor rule extensions.");
+    push_line(
+        profile,
+        "  # These rules came from extensions.apparmor.rules and should be temporary until Intent has native support.",
+    );
+
+    for (index, fragment) in fragments.iter().enumerate() {
+        push_line(profile, "");
+        push_line(
+            profile,
+            &format!("  # extensions.apparmor.rules[{index}]: manual policy."),
+        );
+
+        for line in fragment.trim().lines() {
+            if line.trim().is_empty() {
+                push_line(profile, "");
+            } else {
+                push_line(profile, &format!("  {}", line.trim_start()));
+            }
+        }
     }
 }
 

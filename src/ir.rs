@@ -16,6 +16,7 @@ pub struct PolicyIr {
     pub dbus_communication: Vec<DbusNameNeed>,
     pub outbound_network: Vec<OutboundNetworkNeed>,
     pub capabilities: Vec<CapabilityNeed>,
+    pub manual_extensions: ManualExtensions,
 }
 
 impl PolicyIr {
@@ -147,6 +148,10 @@ impl PolicyIr {
             dbus_communication,
             outbound_network,
             capabilities,
+            manual_extensions: ManualExtensions {
+                selinux_policy: document.extensions.selinux.policy.clone(),
+                apparmor_rules: document.extensions.apparmor.rules.clone(),
+            },
         }
     }
 
@@ -180,6 +185,7 @@ impl PolicyIr {
         push_dbus_section(&mut output, "D-Bus communication", &self.dbus_communication);
         push_network_section(&mut output, &self.outbound_network);
         push_capability_section(&mut output, &self.capabilities);
+        push_manual_extension_section(&mut output, &self.manual_extensions);
 
         output
     }
@@ -193,6 +199,13 @@ pub struct ApplicationIdentity {
     pub executable: String,
     pub user: Option<String>,
     pub group: Option<String>,
+}
+
+/// Backend-specific raw policy fragments carried through normalization.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ManualExtensions {
+    pub selinux_policy: Vec<String>,
+    pub apparmor_rules: Vec<String>,
 }
 
 /// A normalized filesystem need.
@@ -465,6 +478,35 @@ fn push_capability_section(output: &mut String, capabilities: &[CapabilityNeed])
 
     for capability in capabilities {
         push_line(output, &format!("  - {}", capability.name));
+    }
+}
+
+fn push_manual_extension_section(output: &mut String, extensions: &ManualExtensions) {
+    push_line(output, "");
+    push_line(output, "Manual extensions:");
+    if extensions.selinux_policy.is_empty() && extensions.apparmor_rules.is_empty() {
+        push_line(output, "  none");
+        return;
+    }
+
+    if !extensions.selinux_policy.is_empty() {
+        push_line(
+            output,
+            &format!(
+                "  - SELinux policy fragments: {}",
+                extensions.selinux_policy.len()
+            ),
+        );
+    }
+
+    if !extensions.apparmor_rules.is_empty() {
+        push_line(
+            output,
+            &format!(
+                "  - AppArmor rule fragments: {}",
+                extensions.apparmor_rules.len()
+            ),
+        );
     }
 }
 

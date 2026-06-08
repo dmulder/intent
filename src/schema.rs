@@ -1,10 +1,12 @@
 //! Public schema model for Intent files.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Write as _;
 
 use serde::de::{self, Deserializer};
-use serde::Deserialize;
+use serde::ser::Serializer;
+use serde::{Deserialize, Serialize};
 
 use crate::diagnostics::{Diagnostic, Severity};
 
@@ -78,12 +80,13 @@ pub fn markdown_documentation() -> String {
     output.push_str("- Runtime paths must be under `/run` or `/var/run`.\n");
     output
         .push_str("- `tcp` and `udp` network entries require `port`; `http` and `https` do not.\n");
-    output.push_str(
-        "- D-Bus names must be valid well-known names such as `org.example.Service`.\n\n",
-    );
+    output
+        .push_str("- D-Bus names must be valid well-known names such as `org.example.Service`.\n");
+    output.push_str("- Unknown extension blocks produce warnings. Known extension fragments are preserved and compiled into their backend-specific policy section.\n\n");
     output.push_str("## Backend Notes\n\n");
     output.push_str("- SELinux output currently includes a type-enforcement module and file-context suggestions for executable and storage paths.\n");
     output.push_str("- AppArmor output currently includes a profile with file, network, Unix socket, D-Bus, and capability rules where supported by the schema.\n");
+    output.push_str("- Escape hatches under `extensions` are backend-specific and should be treated as temporary workarounds until Intent gains native fields for the behavior.\n");
     output.push_str("- Intent may accept high-level fields before every backend can express them equally. Backend notes above call out gaps.\n");
 
     output
@@ -229,6 +232,43 @@ pub fn json_schema() -> &'static str {
         "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
       },
       "description": "Linux capabilities by friendly kebab-case name."
+    },
+    "extensions": {
+      "description": "Backend-specific temporary escape hatches for policy capabilities not yet modeled by Intent.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "selinux": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "policy": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Manual SELinux type-enforcement policy fragments inserted into the generated policy module."
+            }
+          }
+        },
+        "apparmor": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "rules": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Manual AppArmor profile-body rules inserted into the generated profile."
+            }
+          }
+        }
+      }
     },
     "notes": {
       "type": "array",
@@ -597,6 +637,33 @@ fn schema_fields() -> &'static [SchemaField] {
             apparmor: "Generates capability rules.",
         },
         SchemaField {
+            path: "extensions",
+            required: false,
+            example: "extensions: ...",
+            validation: "Object. Unknown extension blocks produce warnings.",
+            security: "Backend-specific escape hatches should be temporary and reviewed as raw policy.",
+            selinux: "Contains optional SELinux policy fragments.",
+            apparmor: "Contains optional AppArmor profile-body rules.",
+        },
+        SchemaField {
+            path: "extensions.selinux.policy[]",
+            required: false,
+            example: "allow mydaemon_t self:capability sys_ptrace;",
+            validation: "Non-empty SELinux policy fragment with complete statements where Intent can check them.",
+            security: "Raw SELinux policy bypasses Intent's abstraction and should be replaced by native schema support when possible.",
+            selinux: "Inserted into a manual policy extension section of the generated type-enforcement module.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
+            path: "extensions.apparmor.rules[]",
+            required: false,
+            example: "capability sys_ptrace,",
+            validation: "Non-empty AppArmor profile-body rule fragment; rules should terminate with commas.",
+            security: "Raw AppArmor rules bypass Intent's abstraction and should be replaced by native schema support when possible.",
+            selinux: "Not compiled.",
+            apparmor: "Inserted into a manual rule extension section inside the generated profile.",
+        },
+        SchemaField {
             path: "notes[]",
             required: false,
             example: "Example policy only; paths may differ by distribution.",
@@ -613,7 +680,7 @@ fn escape_table(value: &str) -> String {
 }
 
 /// Top-level intent document.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntentDocument {
     /// Schema version declared by the document.
@@ -632,6 +699,9 @@ pub struct IntentDocument {
     /// Linux capabilities requested by friendly name.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Backend-specific temporary escape hatches.
+    #[serde(default, skip_serializing_if = "Extensions::is_empty")]
+    pub extensions: Extensions,
     /// Free-form maintainer notes.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -675,6 +745,7 @@ impl IntentDocument {
         self.storage.validate(&mut diagnostics);
         self.network.validate(&mut diagnostics);
         self.ipc.validate(&mut diagnostics);
+        self.extensions.validate(&mut diagnostics);
 
         for (index, capability) in self.capabilities.iter().enumerate() {
             validate_non_empty(
@@ -719,7 +790,7 @@ impl ValidationReport {
 }
 
 /// Application identity and launch context.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Application {
     pub name: String,
@@ -762,7 +833,7 @@ impl Application {
 }
 
 /// Files and directories the application expects to use.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Storage {
     #[serde(default)]
@@ -805,7 +876,7 @@ impl Storage {
 }
 
 /// A file or directory with a high-level access mode.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoragePath {
     pub path: String,
@@ -837,8 +908,20 @@ impl<'de> Deserialize<'de> for StorageAccess {
     }
 }
 
+impl Serialize for StorageAccess {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Read => "read",
+            Self::ReadWrite => "read-write",
+        })
+    }
+}
+
 /// Network access requested by the application.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Network {
     #[serde(default)]
@@ -878,7 +961,7 @@ impl Network {
 }
 
 /// An outbound network destination.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutboundNetwork {
     pub to: String,
@@ -914,8 +997,22 @@ impl<'de> Deserialize<'de> for NetworkProtocol {
     }
 }
 
+impl Serialize for NetworkProtocol {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Http => "http",
+            Self::Https => "https",
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+        })
+    }
+}
+
 /// Local IPC access requested by the application.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ipc {
     #[serde(default)]
@@ -946,7 +1043,7 @@ impl Ipc {
 }
 
 /// A Unix domain socket used by the application.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnixSocket {
     pub path: String,
@@ -976,8 +1073,20 @@ impl<'de> Deserialize<'de> for UnixSocketMode {
     }
 }
 
+impl Serialize for UnixSocketMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Server => "server",
+            Self::Client => "client",
+        })
+    }
+}
+
 /// D-Bus access requested by the application.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dbus {
     #[serde(default)]
@@ -991,7 +1100,7 @@ impl Dbus {
 }
 
 /// System bus names owned or contacted by the application.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SystemBus {
     #[serde(default)]
@@ -1011,6 +1120,101 @@ impl SystemBus {
                 diagnostics,
                 format!("ipc.dbus.system.talks_to[{index}]"),
                 name,
+            );
+        }
+    }
+}
+
+/// Backend-specific temporary policy fragments.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Extensions {
+    #[serde(default, skip_serializing_if = "SelinuxExtensions::is_empty")]
+    pub selinux: SelinuxExtensions,
+    #[serde(default, skip_serializing_if = "AppArmorExtensions::is_empty")]
+    pub apparmor: AppArmorExtensions,
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_yaml::Value>,
+}
+
+impl Extensions {
+    pub fn is_empty(&self) -> bool {
+        self.selinux.is_empty() && self.apparmor.is_empty() && self.unknown.is_empty()
+    }
+
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
+        self.selinux.validate(diagnostics);
+        self.apparmor.validate(diagnostics);
+
+        for name in self.unknown.keys() {
+            diagnostics.push(
+                Diagnostic::warning(format!("extensions.{name} is not recognized"))
+                    .help("unknown extension blocks are preserved but not compiled"),
+            );
+        }
+    }
+}
+
+/// SELinux-specific escape hatches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SelinuxExtensions {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy: Vec<String>,
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_yaml::Value>,
+}
+
+impl SelinuxExtensions {
+    pub fn is_empty(&self) -> bool {
+        self.policy.is_empty() && self.unknown.is_empty()
+    }
+
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
+        for (index, fragment) in self.policy.iter().enumerate() {
+            validate_policy_fragment(
+                diagnostics,
+                format!("extensions.selinux.policy[{index}]"),
+                fragment,
+                BackendSyntax::Selinux,
+            );
+        }
+
+        for name in self.unknown.keys() {
+            diagnostics.push(
+                Diagnostic::warning(format!("extensions.selinux.{name} is not recognized"))
+                    .help("unknown SELinux extension blocks are preserved but not compiled"),
+            );
+        }
+    }
+}
+
+/// AppArmor-specific escape hatches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AppArmorExtensions {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<String>,
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_yaml::Value>,
+}
+
+impl AppArmorExtensions {
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty() && self.unknown.is_empty()
+    }
+
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
+        for (index, fragment) in self.rules.iter().enumerate() {
+            validate_policy_fragment(
+                diagnostics,
+                format!("extensions.apparmor.rules[{index}]"),
+                fragment,
+                BackendSyntax::AppArmor,
+            );
+        }
+
+        for name in self.unknown.keys() {
+            diagnostics.push(
+                Diagnostic::warning(format!("extensions.apparmor.{name} is not recognized"))
+                    .help("unknown AppArmor extension blocks are preserved but not compiled"),
             );
         }
     }
@@ -1043,6 +1247,124 @@ enum StorageKind {
     Cache,
     State,
     Runtime,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BackendSyntax {
+    Selinux,
+    AppArmor,
+}
+
+fn validate_policy_fragment(
+    diagnostics: &mut Vec<Diagnostic>,
+    field: String,
+    fragment: &str,
+    syntax: BackendSyntax,
+) {
+    validate_non_empty(diagnostics, &field, fragment);
+
+    if fragment.contains('\0') {
+        diagnostics.push(
+            Diagnostic::error(format!("{field} must not contain NUL bytes"))
+                .found("<contains NUL byte>"),
+        );
+    }
+
+    let meaningful_lines = fragment
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect::<Vec<_>>();
+
+    if meaningful_lines.is_empty() {
+        return;
+    }
+
+    match syntax {
+        BackendSyntax::Selinux => validate_selinux_fragment(diagnostics, &field, &meaningful_lines),
+        BackendSyntax::AppArmor => {
+            validate_apparmor_fragment(diagnostics, &field, &meaningful_lines)
+        }
+    }
+}
+
+fn validate_selinux_fragment(
+    diagnostics: &mut Vec<Diagnostic>,
+    field: &str,
+    meaningful_lines: &[&str],
+) {
+    let body = meaningful_lines.join("\n");
+
+    if !body.ends_with(';') && !body.ends_with(')') {
+        diagnostics.push(
+            Diagnostic::error(format!("{field} must contain complete SELinux statements"))
+                .found(body.clone())
+                .help("terminate allow/type rules with ';' or policy macros with ')'"),
+        );
+    }
+
+    validate_balanced_delimiters(diagnostics, field, &body, '{', '}');
+    validate_balanced_delimiters(diagnostics, field, &body, '(', ')');
+}
+
+fn validate_apparmor_fragment(
+    diagnostics: &mut Vec<Diagnostic>,
+    field: &str,
+    meaningful_lines: &[&str],
+) {
+    for line in meaningful_lines {
+        if line.starts_with("profile ") {
+            diagnostics.push(
+                Diagnostic::error(format!("{field} must contain AppArmor profile-body rules only"))
+                    .found(*line)
+                    .help("omit the profile declaration; Intent inserts rules inside the generated profile"),
+            );
+        }
+
+        if !line.ends_with(',') && !line.ends_with('{') && !line.ends_with('}') {
+            diagnostics.push(
+                Diagnostic::error(format!("{field} must contain complete AppArmor rules"))
+                    .found(*line)
+                    .help("terminate AppArmor rules with ','"),
+            );
+        }
+    }
+
+    let body = meaningful_lines.join("\n");
+    validate_balanced_delimiters(diagnostics, field, &body, '(', ')');
+    validate_balanced_delimiters(diagnostics, field, &body, '{', '}');
+}
+
+fn validate_balanced_delimiters(
+    diagnostics: &mut Vec<Diagnostic>,
+    field: &str,
+    body: &str,
+    open: char,
+    close: char,
+) {
+    let mut depth = 0usize;
+
+    for ch in body.chars() {
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            if depth == 0 {
+                diagnostics.push(
+                    Diagnostic::error(format!("{field} has an unmatched '{close}'"))
+                        .help("check the manual policy fragment syntax"),
+                );
+                return;
+            }
+            depth -= 1;
+        }
+    }
+
+    if depth > 0 {
+        diagnostics.push(
+            Diagnostic::error(format!("{field} has an unmatched '{open}'"))
+                .help("check the manual policy fragment syntax"),
+        );
+    }
 }
 
 fn validate_storage_paths(

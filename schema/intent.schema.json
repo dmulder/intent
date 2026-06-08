@@ -137,6 +137,43 @@
       },
       "description": "Linux capabilities by friendly kebab-case name."
     },
+    "extensions": {
+      "description": "Backend-specific temporary escape hatches for policy capabilities not yet modeled by Intent.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "selinux": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "policy": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Manual SELinux type-enforcement policy fragments inserted into the generated policy module."
+            }
+          }
+        },
+        "apparmor": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "rules": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Manual AppArmor profile-body rules inserted into the generated profile."
+            }
+          }
+        }
+      }
+    },
     "notes": {
       "type": "array",
       "minItems": 1,
