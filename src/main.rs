@@ -53,6 +53,11 @@ enum Cli {
     Import {
         policy_path: PathBuf,
         format: ImportFormat,
+        explain: bool,
+    },
+    Diff {
+        original_path: PathBuf,
+        regenerated_path: PathBuf,
     },
     Explain {
         intent_path: PathBuf,
@@ -82,6 +87,7 @@ impl Cli {
             "build" => parse_build(&args[1..]),
             "observe" => parse_observe(&args[1..]),
             "import" => parse_import(&args[1..]),
+            "diff" => parse_diff(&args[1..]),
             "explain" => parse_explain(&args[1..]),
             "schema" => parse_schema(&args[1..]),
             other => Err(format!("unknown command '{other}'")),
@@ -232,10 +238,13 @@ fn parse_observe(args: &[String]) -> Result<Cli, String> {
 
 fn parse_import(args: &[String]) -> Result<Cli, String> {
     let Some(policy_path) = args.first() else {
-        return Err("usage: intent import <policy-file> --format selinux|apparmor".to_string());
+        return Err(
+            "usage: intent import <policy-file> --format selinux|apparmor [--explain]".to_string(),
+        );
     };
 
     let mut format = None;
+    let mut explain = false;
     let mut index = 1;
 
     while index < args.len() {
@@ -251,9 +260,13 @@ fn parse_import(args: &[String]) -> Result<Cli, String> {
                 );
                 index += 2;
             }
+            "--explain" => {
+                explain = true;
+                index += 1;
+            }
             other => {
                 return Err(format!(
-                    "unknown import option '{other}'; usage: intent import <policy-file> --format selinux|apparmor"
+                    "unknown import option '{other}'; usage: intent import <policy-file> --format selinux|apparmor [--explain]"
                 ));
             }
         }
@@ -266,7 +279,18 @@ fn parse_import(args: &[String]) -> Result<Cli, String> {
     Ok(Cli::Import {
         policy_path: PathBuf::from(policy_path),
         format,
+        explain,
     })
+}
+
+fn parse_diff(args: &[String]) -> Result<Cli, String> {
+    match args {
+        [original_path, regenerated_path] => Ok(Cli::Diff {
+            original_path: PathBuf::from(original_path),
+            regenerated_path: PathBuf::from(regenerated_path),
+        }),
+        _ => Err("usage: intent diff <original-policy> <regenerated-policy>".to_string()),
+    }
 }
 
 fn parse_explain(args: &[String]) -> Result<Cli, String> {
@@ -387,13 +411,30 @@ fn run(command: Cli) -> Result<(), String> {
         Cli::Import {
             policy_path,
             format,
+            explain,
         } => {
             let imported =
                 importer::import_path(&policy_path, format).map_err(|err| err.to_string())?;
-            for warning in &imported.warnings {
-                eprintln!("warning: {warning}");
+            if explain {
+                print!("{}", imported.explain());
+            } else {
+                for warning in &imported.warnings {
+                    eprintln!("warning: {warning}");
+                }
+                print!("{}", imported.to_yaml().map_err(|err| err.to_string())?);
             }
-            print!("{}", imported.to_yaml().map_err(|err| err.to_string())?);
+        }
+        Cli::Diff {
+            original_path,
+            regenerated_path,
+        } => {
+            let format = infer_policy_format(&original_path, &regenerated_path)?;
+            let original = fs::read_to_string(&original_path)
+                .map_err(|err| format!("failed to read {}: {err}", original_path.display()))?;
+            let regenerated = fs::read_to_string(&regenerated_path)
+                .map_err(|err| format!("failed to read {}: {err}", regenerated_path.display()))?;
+            let diff = importer::diff_policy_contents(&original, &regenerated, format);
+            print!("{}", diff.render());
         }
         Cli::Explain { intent_path } => {
             let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
@@ -416,9 +457,39 @@ Usage:
   intent validate <intent.yaml> [--deny-warnings]
   intent build <intent.yaml> --target selinux|apparmor|systemd|all [--output <dir>]
   intent observe --source <audit.log> --format selinux|apparmor [--interactive] [--merge-into <intent.yaml>]
-  intent import <policy-file> --format selinux|apparmor
+  intent import <policy-file> --format selinux|apparmor [--explain]
+  intent diff <original-policy> <regenerated-policy>
   intent explain <intent.yaml>
   intent schema [--format markdown|json-schema]"
+}
+
+fn infer_policy_format(
+    original: &std::path::Path,
+    regenerated: &std::path::Path,
+) -> Result<ImportFormat, String> {
+    let original_format = infer_policy_format_one(original)?;
+    let regenerated_format = infer_policy_format_one(regenerated)?;
+    if original_format != regenerated_format {
+        return Err(format!(
+            "policy formats differ: {} appears to be {}, but {} appears to be {}",
+            original.display(),
+            original_format.as_str(),
+            regenerated.display(),
+            regenerated_format.as_str()
+        ));
+    }
+    Ok(original_format)
+}
+
+fn infer_policy_format_one(path: &std::path::Path) -> Result<ImportFormat, String> {
+    match path.extension().and_then(|value| value.to_str()) {
+        Some("te") => Ok(ImportFormat::Selinux),
+        Some("apparmor" | "aa") => Ok(ImportFormat::AppArmor),
+        _ => Err(format!(
+            "could not infer policy format from {}; expected .te, .apparmor, or .aa",
+            path.display()
+        )),
+    }
 }
 
 fn review_suggestions(format: AuditFormat, contents: &str) -> Vec<ReviewSuggestion> {
@@ -776,6 +847,43 @@ mod tests {
                 "intent.yaml"
             ])),
             Err("--merge-into requires --interactive".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_import() {
+        assert_eq!(
+            Cli::parse(args(&["import", "policy.te", "--format", "selinux"])),
+            Ok(Cli::Import {
+                policy_path: PathBuf::from("policy.te"),
+                format: ImportFormat::Selinux,
+                explain: false
+            })
+        );
+        assert_eq!(
+            Cli::parse(args(&[
+                "import",
+                "profile.apparmor",
+                "--format",
+                "apparmor",
+                "--explain"
+            ])),
+            Ok(Cli::Import {
+                policy_path: PathBuf::from("profile.apparmor"),
+                format: ImportFormat::AppArmor,
+                explain: true
+            })
+        );
+    }
+
+    #[test]
+    fn parses_diff() {
+        assert_eq!(
+            Cli::parse(args(&["diff", "original.te", "regenerated.te"])),
+            Ok(Cli::Diff {
+                original_path: PathBuf::from("original.te"),
+                regenerated_path: PathBuf::from("regenerated.te")
+            })
         );
     }
 

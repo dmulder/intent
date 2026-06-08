@@ -34,11 +34,21 @@ impl FromStr for ImportFormat {
     }
 }
 
+impl ImportFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Selinux => "selinux",
+            Self::AppArmor => "apparmor",
+        }
+    }
+}
+
 /// Result of importing backend policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportResult {
     pub document: IntentDocument,
     pub warnings: Vec<String>,
+    pub explanations: Vec<ImportExplanation>,
 }
 
 impl ImportResult {
@@ -49,6 +59,72 @@ impl ImportResult {
             .map_err(|err| ImportError::InvalidOutput(err.to_string()))?;
         Ok(yaml)
     }
+
+    /// Render a human-readable import explanation for review.
+    pub fn explain(&self) -> String {
+        let mut output = String::new();
+        output.push_str("Import explanation\n");
+        output.push_str("==================\n\n");
+
+        let mapped = self
+            .explanations
+            .iter()
+            .filter(|entry| entry.disposition == ImportDisposition::Mapped)
+            .collect::<Vec<_>>();
+        let preserved = self
+            .explanations
+            .iter()
+            .filter(|entry| entry.disposition == ImportDisposition::Preserved)
+            .collect::<Vec<_>>();
+
+        output.push_str("Mapped:\n");
+        push_explanation_entries(&mut output, &mapped, false);
+        output.push('\n');
+
+        output.push_str("Unmapped:\n");
+        push_explanation_entries(&mut output, &preserved, true);
+        output.push('\n');
+
+        output.push_str("Warnings:\n");
+        if self.warnings.is_empty()
+            && self
+                .explanations
+                .iter()
+                .all(|entry| entry.warning.is_none())
+        {
+            output.push_str("  (none)\n");
+        } else {
+            for warning in &self.warnings {
+                output.push_str(&format!("  - {warning}\n"));
+            }
+            let mut inline_warnings = BTreeSet::new();
+            for entry in &self.explanations {
+                if let Some(warning) = &entry.warning {
+                    inline_warnings.insert(warning);
+                }
+            }
+            for warning in inline_warnings {
+                output.push_str(&format!("  - {warning}\n"));
+            }
+        }
+
+        output
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportExplanation {
+    pub disposition: ImportDisposition,
+    pub source: String,
+    pub target: String,
+    pub confidence: u8,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportDisposition {
+    Mapped,
+    Preserved,
 }
 
 /// Import a policy file. SELinux import also reads a sibling `.fc` file when one exists.
@@ -95,6 +171,7 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
     let mut capabilities = BTreeSet::new();
     let mut has_http_network = false;
     let mut extensions = Vec::new();
+    let mut explanations = Vec::new();
     let mut consumed = 0usize;
 
     for fragment in selinux_fragments(policy) {
@@ -104,6 +181,12 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
         }
 
         if should_skip_primary_declaration(trimmed, &primary_domain, &primary_exec_type) {
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "application domain bootstrap",
+                99,
+                None,
+            ));
             consumed += 1;
             continue;
         }
@@ -111,9 +194,20 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
         if let Some(rule) = parse_allow(trimmed) {
             if rule.source == primary_domain {
                 if rule.target == "self" && rule.class == "capability" {
+                    let mapped_capabilities = rule
+                        .permissions
+                        .iter()
+                        .map(|permission| permission.replace('_', "-"))
+                        .collect::<Vec<_>>();
                     for permission in rule.permissions {
                         capabilities.insert(permission.replace('_', "-"));
                     }
+                    explanations.push(mapped_explanation(
+                        &fragment.raw,
+                        &format!("capabilities: {}", mapped_capabilities.join(", ")),
+                        97,
+                        None,
+                    ));
                     consumed += 1;
                     continue;
                 }
@@ -129,12 +223,27 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
                         } else {
                             StorageAccess::Read
                         };
+                        let has_file_context = type_paths.contains_key(&rule.target);
                         let entry = storage_by_type
-                            .entry(rule.target)
+                            .entry(rule.target.clone())
                             .or_insert((kind, StorageAccess::Read));
                         if access == StorageAccess::ReadWrite {
                             entry.1 = StorageAccess::ReadWrite;
                         }
+                        explanations.push(mapped_explanation(
+                            &fragment.raw,
+                            storage_concept(kind),
+                            if has_file_context { 97 } else { 78 },
+                            if has_file_context {
+                                None
+                            } else {
+                                Some(format!(
+                                    "SELinux type {} had no file-context path; Intent inferred a {} path from naming conventions",
+                                    rule.target,
+                                    storage_kind_name(kind)
+                                ))
+                            },
+                        ));
                         consumed += 1;
                         continue;
                     }
@@ -142,10 +251,21 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
             }
         } else if is_http_connect_macro(trimmed, &primary_domain) {
             has_http_network = true;
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "network.outbound:https",
+                82,
+                Some("SELinux HTTP port macro does not identify a destination; Intent inferred outbound internet HTTPS".to_string()),
+            ));
             consumed += 1;
             continue;
         }
 
+        explanations.push(preserved_explanation(
+            &fragment.raw,
+            "extensions.selinux.policy",
+            Some("no native Intent concept currently represents this SELinux fragment".to_string()),
+        ));
         extensions.push(fragment.raw);
     }
 
@@ -190,6 +310,14 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
         ));
     }
     if fc_extension.is_some() {
+        explanations.push(preserved_explanation(
+            "SELinux file contexts",
+            "extensions.selinux.file_contexts",
+            Some(
+                "file contexts are preserved verbatim even when they help resolve storage paths"
+                    .to_string(),
+            ),
+        ));
         warnings.push(
             "preserved SELinux file contexts under extensions.selinux.file_contexts".to_string(),
         );
@@ -225,7 +353,11 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
         ],
     };
 
-    ImportResult { document, warnings }
+    ImportResult {
+        document,
+        warnings,
+        explanations,
+    }
 }
 
 /// Import an AppArmor profile.
@@ -238,6 +370,7 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
     let mut ipc = Ipc::default();
     let mut capabilities = BTreeSet::new();
     let mut extensions = Vec::new();
+    let mut explanations = Vec::new();
     let mut consumed_paths = BTreeSet::new();
     let mut consumed = 0usize;
 
@@ -254,14 +387,36 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
 
         if let Some((path, access)) = parse_apparmor_path_rule(line) {
             if path == executable {
+                explanations.push(mapped_explanation(
+                    &fragment.raw,
+                    "application.executable",
+                    99,
+                    None,
+                ));
                 consumed += 1;
                 continue;
             }
 
             let base = trim_apparmor_glob(&path);
+            let kind = kind_for_path(&base);
+            let standard_path = is_standard_storage_path(&base);
+            let base_for_warning = base.clone();
             if consumed_paths.insert(base.clone()) {
-                push_storage(&mut storage, kind_for_path(&base), base, access);
+                push_storage(&mut storage, kind, base, access);
             }
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                storage_concept(kind),
+                if standard_path { 95 } else { 72 },
+                if standard_path {
+                    None
+                } else {
+                    Some(format!(
+                        "AppArmor path {} is outside standard state/cache/runtime prefixes; Intent classified it as config storage",
+                        base_for_warning
+                    ))
+                },
+            ));
             consumed += 1;
             continue;
         }
@@ -274,6 +429,12 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
                     port: None,
                 });
             }
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "network.outbound:https",
+                82,
+                Some("AppArmor stream network rule is protocol-family scoped; Intent inferred outbound HTTPS without a destination".to_string()),
+            ));
             consumed += 1;
             continue;
         }
@@ -282,6 +443,12 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
             if !ipc.unix_sockets.contains(&socket) {
                 ipc.unix_sockets.push(socket);
             }
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "ipc.unix_sockets",
+                93,
+                None,
+            ));
             consumed += 1;
             continue;
         }
@@ -290,6 +457,12 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
             if !ipc.dbus.system.owns.contains(&name) {
                 ipc.dbus.system.owns.push(name);
             }
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "ipc.dbus.system.owns",
+                90,
+                None,
+            ));
             consumed += 1;
             continue;
         }
@@ -298,6 +471,12 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
             if !ipc.dbus.system.talks_to.contains(&name) {
                 ipc.dbus.system.talks_to.push(name);
             }
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "ipc.dbus.system.talks_to",
+                88,
+                Some("AppArmor D-Bus send/receive direction is collapsed into Intent's talks_to concept".to_string()),
+            ));
             consumed += 1;
             continue;
         }
@@ -306,12 +485,26 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
             .strip_prefix("capability ")
             .and_then(|value| value.strip_suffix(','))
         {
-            capabilities.insert(capability.trim().replace('_', "-"));
+            let capability = capability.trim().replace('_', "-");
+            capabilities.insert(capability.clone());
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                &format!("capabilities: {capability}"),
+                97,
+                None,
+            ));
             consumed += 1;
             continue;
         }
 
         if !line.starts_with('}') {
+            explanations.push(preserved_explanation(
+                &fragment.raw,
+                "extensions.apparmor.rules",
+                Some(
+                    "no native Intent concept currently represents this AppArmor rule".to_string(),
+                ),
+            ));
             extensions.push(fragment.raw);
         }
     }
@@ -362,7 +555,57 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
         ],
     };
 
-    ImportResult { document, warnings }
+    ImportResult {
+        document,
+        warnings,
+        explanations,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyDiff {
+    pub format: ImportFormat,
+    pub matched: Vec<String>,
+    pub only_original: Vec<String>,
+    pub only_regenerated: Vec<String>,
+}
+
+impl PolicyDiff {
+    pub fn render(&self) -> String {
+        let mut output = String::new();
+        output.push_str(&format!("Policy diff ({})\n", self.format.as_str()));
+        output.push_str("====================\n\n");
+        output.push_str(&format!("Matched statements: {}\n", self.matched.len()));
+        let coverage = if self.matched.is_empty() && self.only_original.is_empty() {
+            100
+        } else {
+            (self.matched.len() * 100) / (self.matched.len() + self.only_original.len())
+        };
+        output.push_str(&format!("Original coverage: {coverage}%\n"));
+        output.push_str(&format!(
+            "Regenerated extra statements: {}\n\n",
+            self.only_regenerated.len()
+        ));
+
+        output.push_str("Only in original:\n");
+        push_diff_entries(&mut output, &self.only_original);
+        output.push('\n');
+        output.push_str("Only in regenerated:\n");
+        push_diff_entries(&mut output, &self.only_regenerated);
+        output
+    }
+}
+
+pub fn diff_policy_contents(original: &str, regenerated: &str, format: ImportFormat) -> PolicyDiff {
+    let original = normalized_statements(original, format);
+    let regenerated = normalized_statements(regenerated, format);
+    let (matched, only_original, only_regenerated) = multiset_diff(original, regenerated);
+    PolicyDiff {
+        format,
+        matched,
+        only_original,
+        only_regenerated,
+    }
 }
 
 #[derive(Debug)]
@@ -907,6 +1150,170 @@ fn mode_key(mode: UnixSocketMode) -> u8 {
     match mode {
         UnixSocketMode::Server => 0,
         UnixSocketMode::Client => 1,
+    }
+}
+
+fn mapped_explanation(
+    source: &str,
+    target: &str,
+    confidence: u8,
+    warning: Option<String>,
+) -> ImportExplanation {
+    ImportExplanation {
+        disposition: ImportDisposition::Mapped,
+        source: source.trim().to_string(),
+        target: target.to_string(),
+        confidence,
+        warning,
+    }
+}
+
+fn preserved_explanation(source: &str, target: &str, warning: Option<String>) -> ImportExplanation {
+    ImportExplanation {
+        disposition: ImportDisposition::Preserved,
+        source: source.trim().to_string(),
+        target: target.to_string(),
+        confidence: 100,
+        warning,
+    }
+}
+
+fn push_explanation_entries(output: &mut String, entries: &[&ImportExplanation], preserved: bool) {
+    if entries.is_empty() {
+        output.push_str("  (none)\n");
+        return;
+    }
+
+    for entry in entries {
+        for line in entry.source.lines() {
+            output.push_str(&format!("  {line}\n"));
+        }
+        if preserved {
+            output.push_str(&format!("    -> stored in {}\n", entry.target));
+        } else {
+            output.push_str(&format!("    -> {}\n", entry.target));
+        }
+        output.push_str(&format!("    confidence: {}%\n", entry.confidence));
+        if let Some(warning) = &entry.warning {
+            output.push_str(&format!("    warning: {warning}\n"));
+        }
+    }
+}
+
+fn storage_concept(kind: StorageKind) -> &'static str {
+    match kind {
+        StorageKind::Config => "storage.config",
+        StorageKind::Cache => "storage.cache",
+        StorageKind::State => "storage.state",
+        StorageKind::Runtime => "storage.runtime",
+    }
+}
+
+fn storage_kind_name(kind: StorageKind) -> &'static str {
+    match kind {
+        StorageKind::Config => "config",
+        StorageKind::Cache => "cache",
+        StorageKind::State => "state",
+        StorageKind::Runtime => "runtime",
+    }
+}
+
+fn is_standard_storage_path(path: &str) -> bool {
+    path.starts_with("/etc/")
+        || path.starts_with("/var/cache/")
+        || path.starts_with("/var/lib/")
+        || path.starts_with("/run/")
+        || path.starts_with("/var/run/")
+}
+
+fn normalized_statements(policy: &str, format: ImportFormat) -> Vec<String> {
+    match format {
+        ImportFormat::Selinux => selinux_fragments(policy)
+            .into_iter()
+            .filter_map(|fragment| normalize_statement(&fragment.body, true))
+            .collect(),
+        ImportFormat::AppArmor => apparmor_body_fragments(policy)
+            .into_iter()
+            .filter_map(|fragment| normalize_statement(&fragment.body, false))
+            .collect(),
+    }
+}
+
+fn normalize_statement(statement: &str, selinux: bool) -> Option<String> {
+    let lines = statement
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && *line != "{"
+                && *line != "}"
+                && if selinux {
+                    !line.starts_with('#')
+                } else {
+                    !line.starts_with('#') || line.starts_with("#include")
+                }
+        })
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>();
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn multiset_diff(
+    original: Vec<String>,
+    regenerated: Vec<String>,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut original_counts = counted_statements(original);
+    let mut regenerated_counts = counted_statements(regenerated);
+    let keys = original_counts
+        .keys()
+        .chain(regenerated_counts.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    let mut matched = Vec::new();
+    let mut only_original = Vec::new();
+    let mut only_regenerated = Vec::new();
+
+    for key in keys {
+        let original_count = original_counts.remove(&key).unwrap_or(0);
+        let regenerated_count = regenerated_counts.remove(&key).unwrap_or(0);
+        for _ in 0..original_count.min(regenerated_count) {
+            matched.push(key.clone());
+        }
+        for _ in 0..original_count.saturating_sub(regenerated_count) {
+            only_original.push(key.clone());
+        }
+        for _ in 0..regenerated_count.saturating_sub(original_count) {
+            only_regenerated.push(key.clone());
+        }
+    }
+
+    (matched, only_original, only_regenerated)
+}
+
+fn counted_statements(statements: Vec<String>) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for statement in statements {
+        *counts.entry(statement).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn push_diff_entries(output: &mut String, entries: &[String]) {
+    if entries.is_empty() {
+        output.push_str("  (none)\n");
+        return;
+    }
+
+    for entry in entries {
+        for line in entry.lines() {
+            output.push_str(&format!("  {line}\n"));
+        }
     }
 }
 
