@@ -1,0 +1,55 @@
+version: 1
+
+application:
+  name: regression-service
+  description: Regression fixture covering supported policy surfaces
+  executable: /usr/libexec/regression-service
+  user: regression
+  group: regression
+
+storage:
+  config:
+    - path: /etc/regression-service/
+      access: read
+    - path: /etc/regression-service
+      access: read
+  cache:
+    - path: /var/cache/regression-service/
+      access: read-write
+  state:
+    - path: /var/lib/regression-service
+      access: read-write
+  runtime:
+    - path: /run/regression-service/
+      access: read-write
+
+network:
+  outbound:
+    - to: api.example.test
+      protocol: https
+    - to: metrics.example.test
+      protocol: tcp
+      port: 8443
+    - to: resolver.example.test
+      protocol: udp
+      port: 53
+
+ipc:
+  unix_sockets:
+    - path: /run/regression-service/control.sock/
+      mode: server
+    - path: /run/dbus/system_bus_socket
+      mode: client
+  dbus:
+    system:
+      owns:
+        - org.example.Regression
+      talks_to:
+        - org.freedesktop.DBus
+
+capabilities:
+  - net-bind-service
+  - dac-override
+
+notes:
+  - Regression fixture only.

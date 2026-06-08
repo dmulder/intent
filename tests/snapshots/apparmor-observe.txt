@@ -1,0 +1,116 @@
+Suggestion 1 of 6: persistent config storage
+Grouped denials: 1
+
+What was denied:
+  profile: himmelblaud
+  operation: open
+  requested_mask: r
+  denied_mask: r
+  name: /etc/himmelblaud/config.yaml
+
+Why Intent mapped it this way:
+  the denied path is under /etc/himmelblaud, which matches Intent's config storage convention
+
+Proposed YAML fragment:
+  storage:
+    config:
+      - path: /etc/himmelblaud
+        access: read
+
+Suggestion 2 of 6: persistent cache storage
+Grouped denials: 1
+
+What was denied:
+  profile: himmelblaud
+  operation: open
+  requested_mask: rw
+  denied_mask: w
+  name: /var/cache/himmelblaud/tokens.db
+
+Why Intent mapped it this way:
+  the denied path is under /var/cache/himmelblaud, which matches Intent's cache storage convention
+
+Proposed YAML fragment:
+  storage:
+    cache:
+      - path: /var/cache/himmelblaud
+        access: read-write
+
+Suggestion 3 of 6: persistent state storage
+Grouped denials: 1
+
+What was denied:
+  profile: himmelblaud
+  operation: open
+  requested_mask: rw
+  denied_mask: w
+  name: /var/lib/himmelblaud/state.db
+
+Why Intent mapped it this way:
+  the denied path is under /var/lib/himmelblaud, which matches Intent's state storage convention
+
+Proposed YAML fragment:
+  storage:
+    state:
+      - path: /var/lib/himmelblaud
+        access: read-write
+
+Suggestion 4 of 6: persistent runtime storage
+Grouped denials: 1
+
+What was denied:
+  profile: himmelblaud
+  operation: open
+  requested_mask: rw
+  denied_mask: w
+  name: /run/himmelblaud/session
+
+Why Intent mapped it this way:
+  the denied path is under /run/himmelblaud, which matches Intent's runtime storage convention
+
+Proposed YAML fragment:
+  storage:
+    runtime:
+      - path: /run/himmelblaud
+        access: read-write
+
+Suggestion 5 of 6: outbound network access
+Grouped denials: 1
+
+What was denied:
+  profile: himmelblaud
+  operation: connect
+  requested_mask: connect
+  denied_mask: connect
+  name: 203.0.113.10:443
+  socket: family=inet, sock_type=stream, protocol=6
+
+Why Intent mapped it this way:
+  an AppArmor network connect denial maps to portable outbound network intent instead of a profile-specific rule
+
+Proposed YAML fragment:
+  network:
+    outbound:
+      - to: <destination>
+        protocol: tcp
+        port: 443
+
+Suggestion 6 of 6: Unix domain socket IPC
+Grouped denials: 1
+
+What was denied:
+  profile: himmelblaud
+  operation: connect
+  requested_mask: wr
+  denied_mask: wr
+  name: /run/dbus/system_bus_socket
+  peer_profile: unconfined
+
+Why Intent mapped it this way:
+  an AppArmor Unix socket denial maps to ipc.unix_sockets with client/server mode inferred from the denied operation or mask
+
+Proposed YAML fragment:
+  ipc:
+    unix_sockets:
+      - path: /run/dbus/system_bus_socket
+        mode: server

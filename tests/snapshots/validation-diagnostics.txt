@@ -1,0 +1,43 @@
+error: storage.config must not be an empty list
+  help: remove the field or add at least one item
+
+error: version must be 1
+  found: 2
+  help: set version: 1
+
+error: application.name must not be empty
+
+error: application.executable must be an absolute path
+  found: usr/bin/demo
+  help: use /usr/bin/demo
+
+error: storage.cache[0].path must be an absolute path
+  found: relative/cache
+  help: use /relative/cache
+
+warning: storage.state[0].path is outside /var/lib for state storage
+  found: /tmp/demo-state
+  help: move state files to /var/lib/<application> or add justification
+
+error: storage.runtime[0].path must be under /run or /var/run for runtime storage
+  found: /var/lib/demo-runtime
+  help: move runtime files to /run/<application>
+
+error: network.outbound[0].to must not be empty
+
+error: network.outbound[0].port is required when protocol is tcp or udp
+  help: add a port field, for example port: 443
+
+error: ipc.unix_sockets[0].path must be an absolute path
+  found: run/demo.sock
+  help: use /run/demo.sock
+
+error: ipc.dbus.system.talks_to[0] must be a valid D-Bus well-known name
+  found: not-a-well-known-name
+  help: use a dotted name such as org.example.Service
+
+error: capabilities[0] must be kebab-case
+  found: NET_ADMIN
+  help: use developer-friendly kebab-case such as net-bind-service
+
+error: notes[0] must not be empty

@@ -1,0 +1,110 @@
+Suggestion 1 of 6: persistent cache storage
+Grouped denials: 1
+
+What was denied:
+  process: himmelblaud
+  path: /var/cache/himmelblaud/tokens.db
+  access: write
+  class: file
+  target: file
+
+Why Intent mapped it this way:
+  the denied path is under /var/cache/himmelblaud, which matches Intent's cache storage convention
+
+Proposed YAML fragment:
+  storage:
+    cache:
+      - path: /var/cache/himmelblaud
+        access: read-write
+
+Suggestion 2 of 6: persistent config storage
+Grouped denials: 1
+
+What was denied:
+  process: himmelblaud
+  path: /etc/himmelblaud
+  access: search
+  class: dir
+  target: directory
+
+Why Intent mapped it this way:
+  the denied path is under /etc/himmelblaud, which matches Intent's config storage convention
+
+Proposed YAML fragment:
+  storage:
+    config:
+      - path: /etc/himmelblaud
+        access: read
+
+Suggestion 3 of 6: Unix domain socket IPC
+Grouped denials: 1
+
+What was denied:
+  process: himmelblaud
+  path: /run/systemd/resolve/io.systemd.Resolve
+  access: connectto
+  class: unix_stream_socket
+  target: unix socket
+
+Why Intent mapped it this way:
+  a Unix socket denial maps to ipc.unix_sockets with client/server mode inferred from the requested socket operation
+
+Proposed YAML fragment:
+  ipc:
+    unix_sockets:
+      - path: /run/systemd/resolve/io.systemd.Resolve
+        mode: client
+
+Suggestion 4 of 6: outbound network access
+Grouped denials: 1
+
+What was denied:
+  process: himmelblaud
+  access: name_connect
+  class: tcp_socket
+  target: network
+
+Why Intent mapped it this way:
+  a socket denial maps to portable outbound network intent instead of a backend-specific allow rule
+
+Proposed YAML fragment:
+  network:
+    outbound:
+      - to: <destination>
+        protocol: tcp
+        port: 443
+
+Suggestion 5 of 6: Linux capability
+Grouped denials: 1
+
+What was denied:
+  process: himmelblaud
+  access: net_bind_service
+  class: capability
+  target: capability
+
+Why Intent mapped it this way:
+  a SELinux capability denial maps to a named Linux capability in high-level intent
+
+Proposed YAML fragment:
+  capabilities:
+    - net-bind-service
+
+Suggestion 6 of 6: D-Bus system bus communication
+Grouped denials: 1
+
+What was denied:
+  process: himmelblaud
+  access: send_msg
+  class: dbus
+  target: dbus
+
+Why Intent mapped it this way:
+  a SELinux dbus denial maps to D-Bus communication or ownership intent on the matching bus name
+
+Proposed YAML fragment:
+  ipc:
+    dbus:
+      system:
+        talks_to:
+          - org.freedesktop.resolve1

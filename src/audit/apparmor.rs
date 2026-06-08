@@ -363,7 +363,7 @@ fn operation_is_any(event: &DenialEvent, values: &[&str]) -> bool {
     event
         .operation
         .as_deref()
-        .is_some_and(|operation| values.iter().any(|value| operation == *value))
+        .is_some_and(|operation| values.contains(&operation))
 }
 
 fn field_has_any_value(field: &str, values: &[&str]) -> bool {

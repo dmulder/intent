@@ -1,0 +1,37 @@
+Intent IR
+
+Application:
+  name: regression-service
+  executable: /usr/libexec/regression-service
+  description: Regression fixture covering supported policy surfaces
+  user: regression
+  group: regression
+
+Read-only paths:
+  - /etc/regression-service (config, read)
+
+Read-write paths:
+  - /var/cache/regression-service (cache, read-write)
+  - /var/lib/regression-service (state, read-write)
+
+Runtime paths:
+  - /run/regression-service (runtime, read-write)
+
+Unix sockets:
+  - /run/dbus/system_bus_socket (client)
+  - /run/regression-service/control.sock (server)
+
+D-Bus ownership:
+  - org.example.Regression (system)
+
+D-Bus communication:
+  - org.freedesktop.DBus (system)
+
+Outbound network:
+  - https api.example.test:443
+  - tcp metrics.example.test:8443
+  - udp resolver.example.test:53
+
+Capabilities:
+  - dac-override
+  - net-bind-service

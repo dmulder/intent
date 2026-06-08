@@ -176,8 +176,24 @@ operations might become `ipc.unix_sockets`. After review, rebuilding from
 
 ## Development
 
-Build and test the project with Cargo:
+CI runs the same checks maintainers should run before sending changes:
 
 ```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+Regression tests live under `tests/`. Generated backend output, normalized IR,
+audit-observer output, and validation diagnostics are covered with checked-in
+snapshots under `tests/snapshots/`.
+
+When an intentional compiler, validation, or audit-observer change alters a
+snapshot, update the snapshots and review the diff:
+
+```sh
+UPDATE_SNAPSHOTS=1 cargo test
+git diff -- tests/snapshots
+```
+
+Only commit snapshot changes that match the intended behavior change.
