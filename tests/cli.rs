@@ -240,12 +240,12 @@ fn imports_selinux_policy_to_valid_intent_yaml() {
     assert!(stdout.contains("path: /var/cache/private/himmelblaud"));
     assert!(stdout.contains("access: read-write"));
     assert!(stdout.contains("capabilities:\n- net-bind-service\n- sys-ptrace"));
-    assert!(stdout.contains("extensions:\n  selinux:"));
-    assert!(stdout.contains("permissive himmelblaud_t;"));
+    assert!(stdout.contains("selinux:"));
+    assert!(stdout.contains("permissive:\n  - himmelblaud_t"));
     assert!(stdout.contains("file_contexts:"));
 
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
-    assert!(stderr.contains("warning: preserved"));
+    assert!(!stderr.contains("warning: preserved"));
 
     let imported_path =
         env::temp_dir().join(format!("intent-import-selinux-{}.yaml", std::process::id()));
@@ -267,6 +267,7 @@ fn imports_selinux_policy_to_valid_intent_yaml() {
     assert!(build.status.success());
     let rebuilt = String::from_utf8(build.stdout).expect("stdout should be utf-8");
     assert!(rebuilt.contains("allow himmelblaud_t self:capability sys_ptrace;"));
+    assert!(rebuilt.contains("permissive himmelblaud_t;"));
 }
 
 #[test]
@@ -294,7 +295,8 @@ fn import_explain_describes_selinux_mappings_and_extensions() {
     assert!(stdout.contains("confidence: 82%"));
     assert!(stdout.contains("Unmapped:"));
     assert!(stdout.contains("permissive himmelblaud_t;"));
-    assert!(stdout.contains("-> stored in extensions.selinux.policy"));
+    assert!(stdout.contains("permissive himmelblaud_t;"));
+    assert!(stdout.contains("-> selinux.permissive"));
 }
 
 #[test]

@@ -9,8 +9,10 @@ use std::str::FromStr;
 use crate::config::IntentConfig;
 use crate::schema::{
     AppArmorExtensions, Application, Extensions, IntentDocument, Ipc, Network, NetworkProtocol,
-    OutboundNetwork, SelinuxExtensions, Storage, StorageAccess, StoragePath, UnixSocket,
-    UnixSocketMode, CURRENT_SCHEMA_VERSION,
+    OutboundNetwork, Process, SelinuxAllow, SelinuxExtensions, SelinuxFileContext,
+    SelinuxFilesystemAssociation, SelinuxMacroCall, SelinuxPolicy, SelinuxRole, SelinuxTransition,
+    SelinuxType, Storage, StorageAccess, StoragePath, UnixSocket, UnixSocketMode,
+    CURRENT_SCHEMA_VERSION,
 };
 
 /// Supported policy import formats.
@@ -170,6 +172,8 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
     let mut storage_by_type = BTreeMap::<String, (StorageKind, StorageAccess)>::new();
     let mut capabilities = BTreeSet::new();
     let mut has_http_network = false;
+    let mut selinux = SelinuxPolicy::default();
+    let mut process_by_domain = BTreeMap::<String, Process>::new();
     let mut extensions = Vec::new();
     let mut explanations = Vec::new();
     let mut consumed = 0usize;
@@ -180,11 +184,192 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
             continue;
         }
 
+        if trimmed.contains("ifdef(") {
+            selinux
+                .compatibility
+                .get_or_insert_with(|| "portable".to_string());
+        }
+
+        if let Some((domain, exec_type)) = parse_domain_macro(trimmed) {
+            upsert_process(
+                &mut process_by_domain,
+                &domain,
+                &exec_type,
+                &type_paths,
+                &module,
+            );
+            explanations.push(mapped_explanation(&fragment.raw, "processes", 95, None));
+            consumed += 1;
+            continue;
+        }
+
         if should_skip_primary_declaration(trimmed, &primary_domain, &primary_exec_type) {
             explanations.push(mapped_explanation(
                 &fragment.raw,
                 "application domain bootstrap",
                 99,
+                None,
+            ));
+            consumed += 1;
+            continue;
+        }
+
+        if let Some(type_name) = parse_type_declaration(trimmed) {
+            if type_name.ends_with("_exec_t") {
+                let domain = matching_domain_for_exec(&domain_exec, &type_name)
+                    .unwrap_or_else(|| type_name.trim_end_matches("_exec_t").to_string() + "_t");
+                upsert_process(
+                    &mut process_by_domain,
+                    &domain,
+                    &type_name,
+                    &type_paths,
+                    &module,
+                );
+                explanations.push(mapped_explanation(&fragment.raw, "processes", 90, None));
+            } else if type_name.ends_with("_t")
+                && domain_exec.iter().any(|(domain, _)| domain == &type_name)
+            {
+                let exec_type = domain_exec
+                    .iter()
+                    .find(|(domain, _)| domain == &type_name)
+                    .map(|(_, exec)| exec.clone())
+                    .unwrap_or_else(|| format!("{}_exec_t", type_name.trim_end_matches("_t")));
+                upsert_process(
+                    &mut process_by_domain,
+                    &type_name,
+                    &exec_type,
+                    &type_paths,
+                    &module,
+                );
+                explanations.push(mapped_explanation(&fragment.raw, "processes", 90, None));
+            } else {
+                push_unique_type(
+                    &mut selinux.types,
+                    SelinuxType {
+                        name: type_name,
+                        kind: None,
+                        optional: false,
+                    },
+                );
+                explanations.push(mapped_explanation(&fragment.raw, "selinux.types", 90, None));
+            }
+            consumed += 1;
+            continue;
+        }
+
+        if let Some((kind, type_name)) = parse_type_macro(trimmed) {
+            if type_name == primary_exec_type || type_name == primary_domain {
+                explanations.push(mapped_explanation(
+                    &fragment.raw,
+                    "application domain bootstrap",
+                    90,
+                    None,
+                ));
+            } else {
+                push_unique_type(
+                    &mut selinux.types,
+                    SelinuxType {
+                        name: type_name,
+                        kind: Some(kind),
+                        optional: trimmed.starts_with("ifdef(")
+                            || trimmed.starts_with("optional {"),
+                    },
+                );
+                explanations.push(mapped_explanation(&fragment.raw, "selinux.types", 86, None));
+            }
+            consumed += 1;
+            continue;
+        }
+
+        if let Some((role, domain)) = parse_role(trimmed) {
+            push_unique_role(
+                &mut selinux.roles,
+                SelinuxRole {
+                    role: role.clone(),
+                    domain: domain.clone(),
+                    optional: false,
+                },
+            );
+            if let Some(process) = process_by_domain.get_mut(&domain) {
+                process.role = Some(role);
+            }
+            explanations.push(mapped_explanation(&fragment.raw, "selinux.roles", 94, None));
+            consumed += 1;
+            continue;
+        }
+
+        if let Some((source, exec_type, target)) = parse_type_transition(trimmed) {
+            push_unique_transition(
+                &mut selinux.transitions,
+                SelinuxTransition {
+                    source,
+                    exec_type,
+                    target,
+                    optional: false,
+                },
+            );
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "selinux.transitions",
+                95,
+                None,
+            ));
+            consumed += 1;
+            continue;
+        }
+
+        if let Some(domain) = parse_permissive(trimmed) {
+            if !selinux.permissive.contains(&domain) {
+                selinux.permissive.push(domain.clone());
+            }
+            if let Some(process) = process_by_domain.get_mut(&domain) {
+                process.permissive = true;
+            }
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "selinux.permissive",
+                99,
+                None,
+            ));
+            consumed += 1;
+            continue;
+        }
+
+        if is_http_connect_macro(trimmed, &primary_domain) {
+            has_http_network = true;
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "network.outbound:https",
+                82,
+                Some("SELinux HTTP port macro does not identify a destination; Intent inferred outbound internet HTTPS".to_string()),
+            ));
+            consumed += 1;
+            continue;
+        }
+
+        if let Some((name, args)) = parse_macro_call(trimmed) {
+            selinux.macro_calls.push(SelinuxMacroCall {
+                name: name.clone(),
+                args,
+                optional: false,
+                condition: None,
+            });
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "selinux.macro_calls",
+                82,
+                None,
+            ));
+            consumed += 1;
+            continue;
+        }
+
+        if let Some(mapped_block) = parse_structured_block(trimmed) {
+            merge_structured_block(&mut selinux, mapped_block);
+            explanations.push(mapped_explanation(
+                &fragment.raw,
+                "selinux structured policy",
+                78,
                 None,
             ));
             consumed += 1;
@@ -249,13 +434,39 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
                     }
                 }
             }
-        } else if is_http_connect_macro(trimmed, &primary_domain) {
-            has_http_network = true;
+            if rule.class == "filesystem" && rule.permissions.iter().any(|p| p == "associate") {
+                selinux
+                    .filesystem_associations
+                    .push(SelinuxFilesystemAssociation {
+                        type_name: rule.source,
+                        filesystem_type: rule.target,
+                        optional: false,
+                    });
+                explanations.push(mapped_explanation(
+                    &fragment.raw,
+                    "selinux.filesystem_associations",
+                    92,
+                    None,
+                ));
+                consumed += 1;
+                continue;
+            }
+
+            push_unique_allow(
+                &mut selinux.allows,
+                SelinuxAllow {
+                    source: rule.source,
+                    target: rule.target,
+                    class: rule.class,
+                    permissions: rule.permissions,
+                    optional: false,
+                },
+            );
             explanations.push(mapped_explanation(
                 &fragment.raw,
-                "network.outbound:https",
-                82,
-                Some("SELinux HTTP port macro does not identify a destination; Intent inferred outbound internet HTTPS".to_string()),
+                "selinux.allows",
+                88,
+                None,
             ));
             consumed += 1;
             continue;
@@ -287,6 +498,7 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
             to: "internet".to_string(),
             protocol: NetworkProtocol::Https,
             port: None,
+            processes: Vec::new(),
         });
     }
 
@@ -302,6 +514,28 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
         })
         .filter(|contents| !contents.is_empty());
 
+    for entry in fc_entries {
+        if entry.type_name == primary_exec_type {
+            continue;
+        }
+        if let Some(process) = process_by_domain
+            .values_mut()
+            .find(|process| process.exec_type.as_deref() == Some(entry.type_name.as_str()))
+        {
+            if process.executable != entry.path
+                && !process.additional_executables.contains(&entry.path)
+            {
+                process.additional_executables.push(entry.path);
+            }
+        } else {
+            selinux.file_contexts.push(SelinuxFileContext {
+                path: entry.path,
+                type_name: entry.type_name,
+                file_type: None,
+            });
+        }
+    }
+
     let mut warnings = Vec::new();
     if !policy_extensions.is_empty() {
         warnings.push(format!(
@@ -310,17 +544,15 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
         ));
     }
     if fc_extension.is_some() {
-        explanations.push(preserved_explanation(
+        explanations.push(mapped_explanation(
             "SELinux file contexts",
-            "extensions.selinux.file_contexts",
+            "selinux.file_contexts",
+            90,
             Some(
-                "file contexts are preserved verbatim even when they help resolve storage paths"
+                "file contexts were parsed into structured SELinux entries where possible"
                     .to_string(),
             ),
         ));
-        warnings.push(
-            "preserved SELinux file contexts under extensions.selinux.file_contexts".to_string(),
-        );
     }
     if consumed == 0 {
         warnings.push("no high-confidence SELinux rules were mapped to native intent".to_string());
@@ -335,6 +567,7 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
             user: None,
             group: None,
         },
+        processes: sorted_processes(process_by_domain, &primary_domain),
         storage,
         network,
         ipc: Ipc::default(),
@@ -342,12 +575,13 @@ pub fn import_selinux(policy: &str, file_contexts: Option<&str>) -> ImportResult
         extensions: Extensions {
             selinux: SelinuxExtensions {
                 policy: policy_extensions,
-                file_contexts: fc_extension.into_iter().collect(),
+                file_contexts: Vec::new(),
                 unknown: BTreeMap::new(),
             },
             apparmor: AppArmorExtensions::default(),
             unknown: BTreeMap::new(),
         },
+        selinux,
         notes: vec![
             "Imported policy should be reviewed before replacing the source policy.".to_string(),
         ],
@@ -427,6 +661,7 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
                     to: "network".to_string(),
                     protocol: NetworkProtocol::Https,
                     port: None,
+                    processes: Vec::new(),
                 });
             }
             explanations.push(mapped_explanation(
@@ -538,6 +773,7 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
             user: None,
             group: None,
         },
+        processes: Vec::new(),
         storage,
         network,
         ipc,
@@ -550,6 +786,7 @@ pub fn import_apparmor(profile: &str) -> ImportResult {
             },
             unknown: BTreeMap::new(),
         },
+        selinux: SelinuxPolicy::default(),
         notes: vec![
             "Imported policy should be reviewed before replacing the source policy.".to_string(),
         ],
@@ -873,6 +1110,366 @@ fn should_skip_primary_declaration(line: &str, domain: &str, exec_type: &str) ->
         || line == format!("init_nnp_daemon_domain({domain}, {exec_type})")
 }
 
+fn parse_type_declaration(line: &str) -> Option<String> {
+    line.strip_prefix("type ")
+        .and_then(|body| body.strip_suffix(';'))
+        .map(str::trim)
+        .filter(|name| !name.contains(' '))
+        .map(ToOwned::to_owned)
+}
+
+fn parse_domain_macro(line: &str) -> Option<(String, String)> {
+    for macro_name in [
+        "init_daemon_domain(",
+        "init_nnp_daemon_domain(",
+        "domain_entry_file(",
+    ] {
+        let Some(body) = line
+            .strip_prefix(macro_name)
+            .and_then(|body| body.strip_suffix(')'))
+        else {
+            continue;
+        };
+        let args = body.split(',').map(str::trim).collect::<Vec<_>>();
+        if args.len() >= 2 {
+            return Some((args[0].to_string(), args[1].to_string()));
+        }
+    }
+    None
+}
+
+fn parse_type_macro(line: &str) -> Option<(String, String)> {
+    for macro_name in [
+        "files_type",
+        "files_config_file",
+        "files_pid_file",
+        "domain_type",
+        "domain_entry_file",
+    ] {
+        let prefix = format!("{macro_name}(");
+        let Some(body) = line
+            .strip_prefix(&prefix)
+            .and_then(|body| body.strip_suffix(')'))
+        else {
+            continue;
+        };
+        let arg = body.split(',').next()?.trim();
+        if !arg.is_empty() {
+            return Some((macro_name.to_string(), arg.to_string()));
+        }
+    }
+
+    if line.starts_with("ifdef(") {
+        for macro_name in [
+            "files_type",
+            "files_config_file",
+            "files_pid_file",
+            "domain_type",
+        ] {
+            let needle = format!("{macro_name}(");
+            let Some(start) = line.find(&needle) else {
+                continue;
+            };
+            let rest = &line[start + needle.len()..];
+            let Some(end) = rest.find(')') else {
+                continue;
+            };
+            let arg = rest[..end].split(',').next()?.trim();
+            if !arg.is_empty() {
+                return Some((macro_name.to_string(), arg.to_string()));
+            }
+        }
+    }
+    None
+}
+
+fn parse_role(line: &str) -> Option<(String, String)> {
+    let body = line.strip_prefix("role ")?.strip_suffix(';')?;
+    let parts = body.split_whitespace().collect::<Vec<_>>();
+    if parts.len() == 3 && parts[1] == "types" {
+        Some((parts[0].to_string(), parts[2].to_string()))
+    } else {
+        None
+    }
+}
+
+fn parse_type_transition(line: &str) -> Option<(String, String, String)> {
+    let body = line.strip_prefix("type_transition ")?.strip_suffix(';')?;
+    let parts = body.split_whitespace().collect::<Vec<_>>();
+    if parts.len() >= 3 && parts[1].ends_with(":process") {
+        Some((
+            parts[0].to_string(),
+            parts[1].trim_end_matches(":process").to_string(),
+            parts[2].to_string(),
+        ))
+    } else {
+        None
+    }
+}
+
+fn parse_permissive(line: &str) -> Option<String> {
+    line.strip_prefix("permissive ")
+        .and_then(|body| body.strip_suffix(';'))
+        .map(str::trim)
+        .filter(|domain| !domain.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn parse_macro_call(line: &str) -> Option<(String, Vec<String>)> {
+    if line.contains('\n')
+        || line.starts_with("allow ")
+        || line.starts_with("type ")
+        || line.starts_with("role ")
+        || line.starts_with("ifdef(")
+        || line.starts_with("optional ")
+        || line.starts_with("require ")
+    {
+        return None;
+    }
+    let (name, rest) = line.split_once('(')?;
+    let args = rest.strip_suffix(')')?;
+    if name.trim().is_empty() {
+        return None;
+    }
+    Some((
+        name.trim().to_string(),
+        args.split(',')
+            .map(str::trim)
+            .filter(|arg| !arg.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+    ))
+}
+
+#[derive(Default)]
+struct StructuredBlock {
+    allows: Vec<SelinuxAllow>,
+    transitions: Vec<SelinuxTransition>,
+    roles: Vec<SelinuxRole>,
+    macro_calls: Vec<SelinuxMacroCall>,
+    filesystem_associations: Vec<SelinuxFilesystemAssociation>,
+    permissive: Vec<String>,
+}
+
+fn parse_structured_block(block: &str) -> Option<StructuredBlock> {
+    if !(block.starts_with("optional {")
+        || block.starts_with("require {")
+        || block.starts_with("ifdef("))
+    {
+        return None;
+    }
+
+    let optional = block.starts_with("optional {");
+    let condition = block_ifdef_condition(block);
+    let mut mapped = StructuredBlock::default();
+
+    for line in block.lines().map(str::trim) {
+        if line.is_empty()
+            || line.starts_with('#')
+            || line == "optional {"
+            || line == "require {"
+            || line == "}"
+            || line.starts_with("type ")
+            || line.starts_with("class ")
+            || line.starts_with("attribute ")
+            || line == "')"
+        {
+            continue;
+        }
+
+        if let Some(rule) = parse_allow(line) {
+            if rule.class == "filesystem" && rule.permissions.iter().any(|p| p == "associate") {
+                mapped
+                    .filesystem_associations
+                    .push(SelinuxFilesystemAssociation {
+                        type_name: rule.source,
+                        filesystem_type: rule.target,
+                        optional,
+                    });
+            } else {
+                mapped.allows.push(SelinuxAllow {
+                    source: rule.source,
+                    target: rule.target,
+                    class: rule.class,
+                    permissions: rule.permissions,
+                    optional,
+                });
+            }
+            continue;
+        }
+
+        if let Some((source, exec_type, target)) = parse_type_transition(line) {
+            mapped.transitions.push(SelinuxTransition {
+                source,
+                exec_type,
+                target,
+                optional,
+            });
+            continue;
+        }
+
+        if let Some((role, domain)) = parse_role(line) {
+            mapped.roles.push(SelinuxRole {
+                role,
+                domain,
+                optional,
+            });
+            continue;
+        }
+
+        if let Some(domain) = parse_permissive(line) {
+            mapped.permissive.push(domain);
+            continue;
+        }
+
+        if let Some((name, args)) = parse_macro_call(line) {
+            mapped.macro_calls.push(SelinuxMacroCall {
+                name,
+                args,
+                optional,
+                condition: condition.clone(),
+            });
+        }
+    }
+
+    if mapped.allows.is_empty()
+        && mapped.transitions.is_empty()
+        && mapped.roles.is_empty()
+        && mapped.macro_calls.is_empty()
+        && mapped.filesystem_associations.is_empty()
+        && mapped.permissive.is_empty()
+    {
+        None
+    } else {
+        Some(mapped)
+    }
+}
+
+fn merge_structured_block(selinux: &mut SelinuxPolicy, block: StructuredBlock) {
+    for allow in block.allows {
+        push_unique_allow(&mut selinux.allows, allow);
+    }
+    for transition in block.transitions {
+        push_unique_transition(&mut selinux.transitions, transition);
+    }
+    for role in block.roles {
+        push_unique_role(&mut selinux.roles, role);
+    }
+    for macro_call in block.macro_calls {
+        selinux.macro_calls.push(macro_call);
+    }
+    for association in block.filesystem_associations {
+        selinux.filesystem_associations.push(association);
+    }
+    for domain in block.permissive {
+        if !selinux.permissive.contains(&domain) {
+            selinux.permissive.push(domain);
+        }
+    }
+}
+
+fn block_ifdef_condition(block: &str) -> Option<String> {
+    let first = block.lines().next()?.trim();
+    let body = first.strip_prefix("ifdef(`")?;
+    let condition = body.split('\'').next()?.trim();
+    if condition.is_empty() {
+        None
+    } else {
+        Some(condition.to_string())
+    }
+}
+
+fn matching_domain_for_exec(pairs: &[(String, String)], exec_type: &str) -> Option<String> {
+    pairs
+        .iter()
+        .find(|(_, exec)| exec == exec_type)
+        .map(|(domain, _)| domain.clone())
+}
+
+fn upsert_process(
+    processes: &mut BTreeMap<String, Process>,
+    domain: &str,
+    exec_type: &str,
+    type_paths: &BTreeMap<String, Vec<String>>,
+    module: &str,
+) {
+    let id = process_id_from_domain(domain, module);
+    let executable = type_paths
+        .get(exec_type)
+        .and_then(|paths| paths.iter().next())
+        .cloned()
+        .unwrap_or_else(|| format!("/usr/bin/{}", id.replace('-', "_")));
+
+    processes.entry(domain.to_string()).or_insert(Process {
+        id,
+        name: domain.trim_end_matches("_t").replace('_', "-"),
+        executable,
+        additional_executables: Vec::new(),
+        domain_type: Some(domain.to_string()),
+        exec_type: Some(exec_type.to_string()),
+        role: None,
+        started_by: Some("init_t".to_string()),
+        use_nnp_transition: false,
+        permissive: false,
+    });
+}
+
+fn process_id_from_domain(domain: &str, module: &str) -> String {
+    let name = domain.trim_end_matches("_t");
+    if name == module {
+        "primary".to_string()
+    } else {
+        name.replace('_', "-")
+    }
+}
+
+fn sorted_processes(processes: BTreeMap<String, Process>, primary_domain: &str) -> Vec<Process> {
+    processes
+        .into_iter()
+        .filter(|(domain, _)| domain != primary_domain)
+        .map(|(_, process)| process)
+        .collect()
+}
+
+fn push_unique_type(types: &mut Vec<SelinuxType>, entry: SelinuxType) {
+    if !types
+        .iter()
+        .any(|existing| existing.name == entry.name && existing.kind == entry.kind)
+    {
+        types.push(entry);
+    }
+}
+
+fn push_unique_role(roles: &mut Vec<SelinuxRole>, entry: SelinuxRole) {
+    if !roles
+        .iter()
+        .any(|existing| existing.role == entry.role && existing.domain == entry.domain)
+    {
+        roles.push(entry);
+    }
+}
+
+fn push_unique_transition(transitions: &mut Vec<SelinuxTransition>, entry: SelinuxTransition) {
+    if !transitions.iter().any(|existing| {
+        existing.source == entry.source
+            && existing.exec_type == entry.exec_type
+            && existing.target == entry.target
+    }) {
+        transitions.push(entry);
+    }
+}
+
+fn push_unique_allow(allows: &mut Vec<SelinuxAllow>, entry: SelinuxAllow) {
+    if !allows.iter().any(|existing| {
+        existing.source == entry.source
+            && existing.target == entry.target
+            && existing.class == entry.class
+            && existing.permissions == entry.permissions
+    }) {
+        allows.push(entry);
+    }
+}
+
 fn is_http_connect_macro(line: &str, domain: &str) -> bool {
     line == format!("corenet_tcp_connect_http_port({domain})")
         || (line.contains("corenet_tcp_connect_http_port") && line.contains(domain))
@@ -998,6 +1595,8 @@ fn push_storage(storage: &mut Storage, kind: StorageKind, path: String, access: 
     let entry = StoragePath {
         path,
         access,
+        processes: Vec::new(),
+        selinux_type: None,
         justification: None,
     };
     match kind {
@@ -1108,6 +1707,7 @@ fn parse_apparmor_unix_rule(line: &str) -> Option<UnixSocket> {
         return Some(UnixSocket {
             path,
             mode: UnixSocketMode::Server,
+            processes: Vec::new(),
         });
     }
     if line.contains("peer=(addr=") {
@@ -1115,6 +1715,7 @@ fn parse_apparmor_unix_rule(line: &str) -> Option<UnixSocket> {
         return Some(UnixSocket {
             path,
             mode: UnixSocketMode::Client,
+            processes: Vec::new(),
         });
     }
     None

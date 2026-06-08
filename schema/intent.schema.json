@@ -46,6 +46,12 @@
         }
       }
     },
+    "processes": {
+      "description": "Additional cooperating executables and SELinux process domains.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/process" }
+    },
     "storage": {
       "description": "Files and directories the application expects to use.",
       "type": "object",
@@ -137,6 +143,10 @@
       },
       "description": "Linux capabilities by friendly kebab-case name."
     },
+    "selinux": {
+      "description": "Structured SELinux-specific policy details imported from or compiled into SELinux policy.",
+      "$ref": "#/$defs/selinuxPolicy"
+    },
     "extensions": {
       "description": "Backend-specific temporary escape hatches for policy capabilities not yet modeled by Intent.",
       "type": "object",
@@ -210,6 +220,16 @@
           "enum": ["read", "read-write"],
           "description": "High-level access mode."
         },
+        "processes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Process ids this storage entry applies to."
+        },
+        "selinux_type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SELinux type name to use for this path when preserving imported labels."
+        },
         "justification": {
           "type": "string",
           "minLength": 1,
@@ -247,6 +267,11 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 65535
+        },
+        "processes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Process ids this network need applies to."
         }
       },
       "allOf": [
@@ -276,7 +301,152 @@
         "mode": {
           "type": "string",
           "enum": ["server", "client"]
+        },
+        "processes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Process ids this socket need applies to."
         }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "executable"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "name": { "type": "string", "minLength": 1 },
+        "executable": { "type": "string", "minLength": 1, "pattern": "^/" },
+        "additional_executables": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "pattern": "^/" }
+        },
+        "domain_type": { "type": "string", "minLength": 1 },
+        "exec_type": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 },
+        "started_by": { "type": "string", "minLength": 1 },
+        "use_nnp_transition": { "type": "boolean" },
+        "permissive": { "type": "boolean" }
+      }
+    },
+    "selinuxPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "compatibility": { "type": "string", "minLength": 1 },
+        "types": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxType" }
+        },
+        "roles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxRole" }
+        },
+        "transitions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxTransition" }
+        },
+        "allows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxAllow" }
+        },
+        "macro_calls": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxMacroCall" }
+        },
+        "filesystem_associations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxFilesystemAssociation" }
+        },
+        "permissive": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "file_contexts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxFileContext" }
+        }
+      }
+    },
+    "selinuxType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "selinuxRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "domain"],
+      "properties": {
+        "role": { "type": "string", "minLength": 1 },
+        "domain": { "type": "string", "minLength": 1 },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "selinuxTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "exec_type", "target"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "exec_type": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "selinuxAllow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "target", "class", "permissions"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "class": { "type": "string", "minLength": 1 },
+        "permissions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "selinuxMacroCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "optional": { "type": "boolean" },
+        "condition": { "type": "string", "minLength": 1 }
+      }
+    },
+    "selinuxFilesystemAssociation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type_name", "filesystem_type"],
+      "properties": {
+        "type_name": { "type": "string", "minLength": 1 },
+        "filesystem_type": { "type": "string", "minLength": 1 },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "selinuxFileContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "type_name"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "pattern": "^/" },
+        "type_name": { "type": "string", "minLength": 1 },
+        "file_type": { "type": "string", "minLength": 1 }
       }
     },
     "dbusName": {

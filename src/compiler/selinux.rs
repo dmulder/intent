@@ -1,8 +1,10 @@
 //! SELinux policy generation.
 
+use std::collections::BTreeSet;
+
 use crate::ir::{
-    NetworkProtocolNeed, PathAccess, PathNeed, PathPurpose, PolicyIr, UnixSocketNeed,
-    UnixSocketRole,
+    NetworkProtocolNeed, PathAccess, PathNeed, PathPurpose, PolicyIr, SelinuxAllowNeed,
+    UnixSocketNeed, UnixSocketRole,
 };
 
 /// Generate an SELinux type enforcement policy module from normalized policy intent.
@@ -55,6 +57,7 @@ pub fn compile(ir: &PolicyIr) -> String {
     push_unix_socket_rules(&mut policy, &ir.unix_sockets, &names);
     push_dbus_warnings(&mut policy, ir);
     push_capability_rules(&mut policy, ir, &names);
+    push_structured_selinux_policy(&mut policy, ir, &names);
     push_manual_policy(&mut policy, &ir.manual_extensions.selinux_policy);
 
     policy
@@ -112,9 +115,164 @@ pub fn file_contexts(ir: &PolicyIr) -> String {
         &names.runtime_type,
     );
     push_socket_contexts(&mut contexts, &ir.unix_sockets, &names);
+    push_structured_file_contexts(&mut contexts, ir);
     push_manual_file_contexts(&mut contexts, &ir.manual_extensions.selinux_file_contexts);
 
     contexts
+}
+
+fn push_structured_selinux_policy(policy: &mut String, ir: &PolicyIr, names: &Names) {
+    if ir.processes.is_empty()
+        && ir.selinux.types.is_empty()
+        && ir.selinux.roles.is_empty()
+        && ir.selinux.transitions.is_empty()
+        && ir.selinux.allows.is_empty()
+        && ir.selinux.macro_calls.is_empty()
+        && ir.selinux.filesystem_associations.is_empty()
+        && ir.selinux.permissive.is_empty()
+    {
+        return;
+    }
+
+    push_line(policy, "");
+    push_line(policy, "########################################");
+    push_line(policy, "# Structured SELinux Policy");
+
+    let mut emitted_types = BTreeSet::from([
+        names.domain_type.clone(),
+        names.exec_type.clone(),
+        names.config_type.clone(),
+        names.cache_type.clone(),
+        names.state_type.clone(),
+        names.runtime_type.clone(),
+    ]);
+
+    for process in &ir.processes {
+        let domain = process
+            .domain_type
+            .clone()
+            .unwrap_or_else(|| format!("{}_t", module_name(&process.id)));
+        let exec_type = process
+            .exec_type
+            .clone()
+            .unwrap_or_else(|| format!("{}_exec_t", module_name(&process.id)));
+
+        push_line(policy, "");
+        push_line(policy, &format!("# process {}.", process.id));
+        if emitted_types.insert(domain.clone()) {
+            push_line(policy, &format!("type {domain};"));
+            push_line(policy, &format!("domain_type({domain})"));
+        }
+        if emitted_types.insert(exec_type.clone()) {
+            push_line(policy, &format!("type {exec_type};"));
+            push_line(policy, &format!("files_type({exec_type})"));
+        }
+        push_line(policy, &format!("domain_entry_file({domain}, {exec_type})"));
+        let macro_name = if process.use_nnp_transition {
+            "init_nnp_daemon_domain"
+        } else {
+            "init_daemon_domain"
+        };
+        push_line(policy, &format!("{macro_name}({domain}, {exec_type})"));
+        if let Some(role) = &process.role {
+            push_line(policy, &format!("role {role} types {domain};"));
+        }
+        if process.permissive {
+            push_line(policy, &format!("permissive {domain};"));
+        }
+    }
+
+    for entry in &ir.selinux.types {
+        if !emitted_types.insert(entry.name.clone()) {
+            continue;
+        }
+        let mut lines = vec![format!("type {};", entry.name)];
+        if let Some(kind) = &entry.kind {
+            lines.push(format!("{kind}({})", entry.name));
+        }
+        push_optional_lines(policy, entry.optional, &lines);
+    }
+
+    for entry in &ir.selinux.roles {
+        push_optional_lines(
+            policy,
+            entry.optional,
+            &[format!("role {} types {};", entry.role, entry.domain)],
+        );
+    }
+
+    for entry in &ir.selinux.transitions {
+        push_optional_lines(
+            policy,
+            entry.optional,
+            &[format!(
+                "type_transition {} {}:process {};",
+                entry.source, entry.exec_type, entry.target
+            )],
+        );
+    }
+
+    for entry in &ir.selinux.allows {
+        push_allow(policy, entry);
+    }
+
+    for entry in &ir.selinux.macro_calls {
+        let call = format!("{}({})", entry.name, entry.args.join(", "));
+        if let Some(condition) = &entry.condition {
+            push_line(policy, "");
+            push_line(policy, &format!("ifdef(`{condition}',`{call}')"));
+        } else {
+            push_optional_lines(policy, entry.optional, &[call]);
+        }
+    }
+
+    for entry in &ir.selinux.filesystem_associations {
+        push_optional_lines(
+            policy,
+            entry.optional,
+            &[format!(
+                "allow {} {}:filesystem associate;",
+                entry.type_name, entry.filesystem_type
+            )],
+        );
+    }
+
+    for domain in &ir.selinux.permissive {
+        push_line(policy, "");
+        push_line(policy, &format!("permissive {domain};"));
+    }
+}
+
+fn push_allow(policy: &mut String, entry: &SelinuxAllowNeed) {
+    let permissions = permission_set(&entry.permissions);
+    let line = format!(
+        "allow {} {}:{} {};",
+        entry.source, entry.target, entry.class, permissions
+    );
+    push_optional_lines(policy, entry.optional, &[line]);
+}
+
+fn push_optional_lines(policy: &mut String, optional: bool, lines: &[String]) {
+    push_line(policy, "");
+    if optional {
+        push_line(policy, "optional {");
+        for line in lines {
+            push_line(policy, &format!("\t{line}"));
+        }
+        push_line(policy, "}");
+    } else {
+        for line in lines {
+            push_line(policy, line);
+        }
+    }
+}
+
+fn permission_set(permissions: &[String]) -> String {
+    if permissions.len() == 1 {
+        permissions[0].clone()
+    } else {
+        format!("{{ {} }}", permissions.join(" "))
+    }
 }
 
 /// Return the default `.te` file name for a generated SELinux module.
@@ -533,6 +691,50 @@ fn push_socket_contexts(contexts: &mut String, sockets: &[UnixSocketNeed], names
                 );
             }
         }
+    }
+}
+
+fn push_structured_file_contexts(contexts: &mut String, ir: &PolicyIr) {
+    if ir.processes.is_empty() && ir.selinux.file_contexts.is_empty() {
+        return;
+    }
+
+    push_line(contexts, "");
+    push_line(contexts, "# Structured SELinux file contexts.");
+
+    for process in &ir.processes {
+        let exec_type = process
+            .exec_type
+            .clone()
+            .unwrap_or_else(|| format!("{}_exec_t", module_name(&process.id)));
+        let mut paths = vec![process.executable.as_str()];
+        paths.extend(process.additional_executables.iter().map(String::as_str));
+        for path in paths {
+            push_line(
+                contexts,
+                &format!(
+                    "{} -- gen_context(system_u:object_r:{exec_type},s0)",
+                    file_context_regex(path)
+                ),
+            );
+        }
+    }
+
+    for entry in &ir.selinux.file_contexts {
+        let file_type = entry
+            .file_type
+            .as_deref()
+            .map(|value| format!(" {value} "))
+            .unwrap_or_else(|| " ".to_string());
+        push_line(
+            contexts,
+            &format!(
+                "{}{}gen_context(system_u:object_r:{},s0)",
+                file_context_regex(&entry.path),
+                file_type,
+                entry.type_name
+            ),
+        );
     }
 }
 

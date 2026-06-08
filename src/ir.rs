@@ -8,6 +8,7 @@ use crate::schema::{IntentDocument, NetworkProtocol, StorageAccess, StoragePath,
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolicyIr {
     pub application: ApplicationIdentity,
+    pub processes: Vec<ProcessNeed>,
     pub read_only_paths: Vec<PathNeed>,
     pub read_write_paths: Vec<PathNeed>,
     pub runtime_paths: Vec<PathNeed>,
@@ -17,6 +18,7 @@ pub struct PolicyIr {
     pub outbound_network: Vec<OutboundNetworkNeed>,
     pub capabilities: Vec<CapabilityNeed>,
     pub manual_extensions: ManualExtensions,
+    pub selinux: SelinuxIr,
 }
 
 impl PolicyIr {
@@ -140,6 +142,26 @@ impl PolicyIr {
                 user: document.application.user.clone(),
                 group: document.application.group.clone(),
             },
+            processes: document
+                .processes
+                .iter()
+                .map(|process| ProcessNeed {
+                    id: process.id.clone(),
+                    name: process.name.clone(),
+                    executable: normalize_path(&process.executable),
+                    additional_executables: process
+                        .additional_executables
+                        .iter()
+                        .map(|path| normalize_path(path))
+                        .collect(),
+                    domain_type: process.domain_type.clone(),
+                    exec_type: process.exec_type.clone(),
+                    role: process.role.clone(),
+                    started_by: process.started_by.clone(),
+                    use_nnp_transition: process.use_nnp_transition,
+                    permissive: process.permissive,
+                })
+                .collect(),
             read_only_paths,
             read_write_paths,
             runtime_paths,
@@ -152,6 +174,84 @@ impl PolicyIr {
                 selinux_policy: document.extensions.selinux.policy.clone(),
                 selinux_file_contexts: document.extensions.selinux.file_contexts.clone(),
                 apparmor_rules: document.extensions.apparmor.rules.clone(),
+            },
+            selinux: SelinuxIr {
+                compatibility: document.selinux.compatibility.clone(),
+                types: document
+                    .selinux
+                    .types
+                    .iter()
+                    .map(|entry| SelinuxTypeNeed {
+                        name: entry.name.clone(),
+                        kind: entry.kind.clone(),
+                        optional: entry.optional,
+                    })
+                    .collect(),
+                roles: document
+                    .selinux
+                    .roles
+                    .iter()
+                    .map(|entry| SelinuxRoleNeed {
+                        role: entry.role.clone(),
+                        domain: entry.domain.clone(),
+                        optional: entry.optional,
+                    })
+                    .collect(),
+                transitions: document
+                    .selinux
+                    .transitions
+                    .iter()
+                    .map(|entry| SelinuxTransitionNeed {
+                        source: entry.source.clone(),
+                        exec_type: entry.exec_type.clone(),
+                        target: entry.target.clone(),
+                        optional: entry.optional,
+                    })
+                    .collect(),
+                allows: document
+                    .selinux
+                    .allows
+                    .iter()
+                    .map(|entry| SelinuxAllowNeed {
+                        source: entry.source.clone(),
+                        target: entry.target.clone(),
+                        class: entry.class.clone(),
+                        permissions: entry.permissions.clone(),
+                        optional: entry.optional,
+                    })
+                    .collect(),
+                macro_calls: document
+                    .selinux
+                    .macro_calls
+                    .iter()
+                    .map(|entry| SelinuxMacroNeed {
+                        name: entry.name.clone(),
+                        args: entry.args.clone(),
+                        optional: entry.optional,
+                        condition: entry.condition.clone(),
+                    })
+                    .collect(),
+                filesystem_associations: document
+                    .selinux
+                    .filesystem_associations
+                    .iter()
+                    .map(|entry| SelinuxFilesystemAssociationNeed {
+                        type_name: entry.type_name.clone(),
+                        filesystem_type: entry.filesystem_type.clone(),
+                        optional: entry.optional,
+                    })
+                    .collect(),
+                permissive: document.selinux.permissive.clone(),
+                file_contexts: document
+                    .selinux
+                    .file_contexts
+                    .iter()
+                    .map(|entry| SelinuxFileContextNeed {
+                        path: normalize_path(&entry.path),
+                        type_name: entry.type_name.clone(),
+                        file_type: entry.file_type.clone(),
+                    })
+                    .collect(),
             },
         }
     }
@@ -186,6 +286,8 @@ impl PolicyIr {
         push_dbus_section(&mut output, "D-Bus communication", &self.dbus_communication);
         push_network_section(&mut output, &self.outbound_network);
         push_capability_section(&mut output, &self.capabilities);
+        push_process_section(&mut output, &self.processes);
+        push_selinux_section(&mut output, &self.selinux);
         push_manual_extension_section(&mut output, &self.manual_extensions);
 
         output
@@ -202,12 +304,92 @@ pub struct ApplicationIdentity {
     pub group: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessNeed {
+    pub id: String,
+    pub name: String,
+    pub executable: String,
+    pub additional_executables: Vec<String>,
+    pub domain_type: Option<String>,
+    pub exec_type: Option<String>,
+    pub role: Option<String>,
+    pub started_by: Option<String>,
+    pub use_nnp_transition: bool,
+    pub permissive: bool,
+}
+
 /// Backend-specific raw policy fragments carried through normalization.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ManualExtensions {
     pub selinux_policy: Vec<String>,
     pub selinux_file_contexts: Vec<String>,
     pub apparmor_rules: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SelinuxIr {
+    pub compatibility: Option<String>,
+    pub types: Vec<SelinuxTypeNeed>,
+    pub roles: Vec<SelinuxRoleNeed>,
+    pub transitions: Vec<SelinuxTransitionNeed>,
+    pub allows: Vec<SelinuxAllowNeed>,
+    pub macro_calls: Vec<SelinuxMacroNeed>,
+    pub filesystem_associations: Vec<SelinuxFilesystemAssociationNeed>,
+    pub permissive: Vec<String>,
+    pub file_contexts: Vec<SelinuxFileContextNeed>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelinuxTypeNeed {
+    pub name: String,
+    pub kind: Option<String>,
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelinuxRoleNeed {
+    pub role: String,
+    pub domain: String,
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelinuxTransitionNeed {
+    pub source: String,
+    pub exec_type: String,
+    pub target: String,
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelinuxAllowNeed {
+    pub source: String,
+    pub target: String,
+    pub class: String,
+    pub permissions: Vec<String>,
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelinuxMacroNeed {
+    pub name: String,
+    pub args: Vec<String>,
+    pub optional: bool,
+    pub condition: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelinuxFilesystemAssociationNeed {
+    pub type_name: String,
+    pub filesystem_type: String,
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelinuxFileContextNeed {
+    pub path: String,
+    pub type_name: String,
+    pub file_type: Option<String>,
 }
 
 /// A normalized filesystem need.
@@ -481,6 +663,51 @@ fn push_capability_section(output: &mut String, capabilities: &[CapabilityNeed])
     for capability in capabilities {
         push_line(output, &format!("  - {}", capability.name));
     }
+}
+
+fn push_process_section(output: &mut String, processes: &[ProcessNeed]) {
+    push_line(output, "");
+    push_line(output, "Processes:");
+    if processes.is_empty() {
+        push_line(output, "  none");
+        return;
+    }
+
+    for process in processes {
+        push_line(
+            output,
+            &format!("  - {}: {}", process.id, process.executable),
+        );
+    }
+}
+
+fn push_selinux_section(output: &mut String, selinux: &SelinuxIr) {
+    push_line(output, "");
+    push_line(output, "Structured SELinux:");
+    if selinux.types.is_empty()
+        && selinux.roles.is_empty()
+        && selinux.transitions.is_empty()
+        && selinux.allows.is_empty()
+        && selinux.macro_calls.is_empty()
+        && selinux.filesystem_associations.is_empty()
+        && selinux.permissive.is_empty()
+        && selinux.file_contexts.is_empty()
+    {
+        push_line(output, "  none");
+        return;
+    }
+
+    push_line(output, &format!("  - types: {}", selinux.types.len()));
+    push_line(output, &format!("  - roles: {}", selinux.roles.len()));
+    push_line(
+        output,
+        &format!("  - transitions: {}", selinux.transitions.len()),
+    );
+    push_line(output, &format!("  - allows: {}", selinux.allows.len()));
+    push_line(
+        output,
+        &format!("  - macro calls: {}", selinux.macro_calls.len()),
+    );
 }
 
 fn push_manual_extension_section(output: &mut String, extensions: &ManualExtensions) {

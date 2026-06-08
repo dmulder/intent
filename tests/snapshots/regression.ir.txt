@@ -36,5 +36,11 @@ Capabilities:
   - dac-override
   - net-bind-service
 
+Processes:
+  none
+
+Structured SELinux:
+  none
+
 Manual extensions:
   none

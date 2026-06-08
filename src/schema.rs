@@ -142,6 +142,12 @@ pub fn json_schema() -> &'static str {
         }
       }
     },
+    "processes": {
+      "description": "Additional cooperating executables and SELinux process domains.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/process" }
+    },
     "storage": {
       "description": "Files and directories the application expects to use.",
       "type": "object",
@@ -233,6 +239,10 @@ pub fn json_schema() -> &'static str {
       },
       "description": "Linux capabilities by friendly kebab-case name."
     },
+    "selinux": {
+      "description": "Structured SELinux-specific policy details imported from or compiled into SELinux policy.",
+      "$ref": "#/$defs/selinuxPolicy"
+    },
     "extensions": {
       "description": "Backend-specific temporary escape hatches for policy capabilities not yet modeled by Intent.",
       "type": "object",
@@ -306,6 +316,16 @@ pub fn json_schema() -> &'static str {
           "enum": ["read", "read-write"],
           "description": "High-level access mode."
         },
+        "processes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Process ids this storage entry applies to."
+        },
+        "selinux_type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SELinux type name to use for this path when preserving imported labels."
+        },
         "justification": {
           "type": "string",
           "minLength": 1,
@@ -343,6 +363,11 @@ pub fn json_schema() -> &'static str {
           "type": "integer",
           "minimum": 1,
           "maximum": 65535
+        },
+        "processes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Process ids this network need applies to."
         }
       },
       "allOf": [
@@ -372,7 +397,152 @@ pub fn json_schema() -> &'static str {
         "mode": {
           "type": "string",
           "enum": ["server", "client"]
+        },
+        "processes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Process ids this socket need applies to."
         }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "executable"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "name": { "type": "string", "minLength": 1 },
+        "executable": { "type": "string", "minLength": 1, "pattern": "^/" },
+        "additional_executables": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "pattern": "^/" }
+        },
+        "domain_type": { "type": "string", "minLength": 1 },
+        "exec_type": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 },
+        "started_by": { "type": "string", "minLength": 1 },
+        "use_nnp_transition": { "type": "boolean" },
+        "permissive": { "type": "boolean" }
+      }
+    },
+    "selinuxPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "compatibility": { "type": "string", "minLength": 1 },
+        "types": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxType" }
+        },
+        "roles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxRole" }
+        },
+        "transitions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxTransition" }
+        },
+        "allows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxAllow" }
+        },
+        "macro_calls": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxMacroCall" }
+        },
+        "filesystem_associations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxFilesystemAssociation" }
+        },
+        "permissive": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "file_contexts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/selinuxFileContext" }
+        }
+      }
+    },
+    "selinuxType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "selinuxRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "domain"],
+      "properties": {
+        "role": { "type": "string", "minLength": 1 },
+        "domain": { "type": "string", "minLength": 1 },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "selinuxTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "exec_type", "target"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "exec_type": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "selinuxAllow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "target", "class", "permissions"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "class": { "type": "string", "minLength": 1 },
+        "permissions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "selinuxMacroCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "optional": { "type": "boolean" },
+        "condition": { "type": "string", "minLength": 1 }
+      }
+    },
+    "selinuxFilesystemAssociation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type_name", "filesystem_type"],
+      "properties": {
+        "type_name": { "type": "string", "minLength": 1 },
+        "filesystem_type": { "type": "string", "minLength": 1 },
+        "optional": { "type": "boolean" }
+      }
+    },
+    "selinuxFileContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "type_name"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "pattern": "^/" },
+        "type_name": { "type": "string", "minLength": 1 },
+        "file_type": { "type": "string", "minLength": 1 }
       }
     },
     "dbusName": {
@@ -464,6 +634,42 @@ fn schema_fields() -> &'static [SchemaField] {
             apparmor: "Documented in generated comments only.",
         },
         SchemaField {
+            path: "processes[]",
+            required: false,
+            example: "{ id: helper, name: helper, executable: /usr/bin/helper }",
+            validation: "Non-empty list of process entries.",
+            security: "Use for cooperating executables that need distinct confinement.",
+            selinux: "Generates additional process domains and executable labels.",
+            apparmor: "Documented only; AppArmor still compiles the primary profile.",
+        },
+        SchemaField {
+            path: "processes[].id",
+            required: true,
+            example: "helper",
+            validation: "Non-empty kebab-case string.",
+            security: "Stable process ids make scoped rules reviewable.",
+            selinux: "Used as a fallback for generated type names.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
+            path: "processes[].executable",
+            required: true,
+            example: "/usr/bin/helper",
+            validation: "Absolute, normalized, one-line path.",
+            security: "Choose the executable that enters the process domain.",
+            selinux: "Labels the executable and creates the domain entry target.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
+            path: "processes[].domain_type",
+            required: false,
+            example: "helper_t",
+            validation: "Non-empty string when present.",
+            security: "Preserves reviewed SELinux type names during import.",
+            selinux: "Overrides generated process domain type names.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
             path: "storage",
             required: false,
             example: "storage: ...",
@@ -525,6 +731,24 @@ fn schema_fields() -> &'static [SchemaField] {
             security: "Prefer read unless the application must create or modify data.",
             selinux: "Maps to read-only or read/write file permissions.",
             apparmor: "Maps to `r` or `rw` path permissions.",
+        },
+        SchemaField {
+            path: "storage.*[].processes",
+            required: false,
+            example: "[helper]",
+            validation: "List of process ids when present.",
+            security: "Scope storage access to only the process that needs it.",
+            selinux: "Reserved for process-scoped storage generation.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
+            path: "storage.*[].selinux_type",
+            required: false,
+            example: "helper_var_lib_t",
+            validation: "Non-empty string when present.",
+            security: "Preserves imported path labels for SELinux review.",
+            selinux: "Reserved for imported type naming and file contexts.",
+            apparmor: "Not compiled.",
         },
         SchemaField {
             path: "storage.*[].justification",
@@ -646,6 +870,42 @@ fn schema_fields() -> &'static [SchemaField] {
             apparmor: "Generates capability rules.",
         },
         SchemaField {
+            path: "selinux",
+            required: false,
+            example: "selinux: ...",
+            validation: "Object. Unknown fields are rejected.",
+            security: "Structured SELinux details should be reviewed like backend policy.",
+            selinux: "Generates SELinux-specific declarations, allows, transitions, macros, and file contexts.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
+            path: "selinux.allows[]",
+            required: false,
+            example: "{ source: helper_t, target: self, class: capability, permissions: [dac_override] }",
+            validation: "Requires source, target, class, and one or more permissions.",
+            security: "Prefer high-level fields when available; use for precise SELinux imports.",
+            selinux: "Generates SELinux allow rules.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
+            path: "selinux.transitions[]",
+            required: false,
+            example: "{ source: init_t, exec_type: helper_exec_t, target: helper_t }",
+            validation: "Requires source, exec_type, and target.",
+            security: "Documents explicit process domain transitions.",
+            selinux: "Generates type_transition rules.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
+            path: "selinux.file_contexts[]",
+            required: false,
+            example: "{ path: /usr/bin/helper, type_name: helper_exec_t }",
+            validation: "Requires absolute path and type_name.",
+            security: "Labels must match the intended executable or data path.",
+            selinux: "Generates structured SELinux file-context entries.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
             path: "extensions",
             required: false,
             example: "extensions: ...",
@@ -705,6 +965,9 @@ pub struct IntentDocument {
     pub version: u32,
     /// Application identity and launch context.
     pub application: Application,
+    /// Additional cooperating executables/process domains.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<Process>,
     /// Files and directories the application expects to use.
     #[serde(default, skip_serializing_if = "Storage::is_empty")]
     pub storage: Storage,
@@ -720,6 +983,9 @@ pub struct IntentDocument {
     /// Backend-specific temporary escape hatches.
     #[serde(default, skip_serializing_if = "Extensions::is_empty")]
     pub extensions: Extensions,
+    /// Structured SELinux-specific policy details.
+    #[serde(default, skip_serializing_if = "SelinuxPolicy::is_empty")]
+    pub selinux: SelinuxPolicy,
     /// Free-form maintainer notes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
@@ -760,10 +1026,14 @@ impl IntentDocument {
         }
 
         self.application.validate(&mut diagnostics);
+        for (index, process) in self.processes.iter().enumerate() {
+            process.validate(&mut diagnostics, index);
+        }
         self.storage.validate(&mut diagnostics);
         self.network.validate(&mut diagnostics);
         self.ipc.validate(&mut diagnostics);
         self.extensions.validate(&mut diagnostics);
+        self.selinux.validate(&mut diagnostics);
 
         for (index, capability) in self.capabilities.iter().enumerate() {
             validate_non_empty(
@@ -804,6 +1074,74 @@ impl ValidationReport {
         self.diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+    }
+}
+
+/// A cooperating process for multi-binary applications.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Process {
+    pub id: String,
+    pub name: String,
+    pub executable: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_executables: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub use_nnp_transition: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub permissive: bool,
+}
+
+impl Process {
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>, index: usize) {
+        let prefix = format!("processes[{index}]");
+        validate_non_empty(diagnostics, format!("{prefix}.id"), &self.id);
+        validate_kebab_name(
+            diagnostics,
+            format!("{prefix}.id"),
+            &self.id,
+            "use a stable kebab-case process id",
+        );
+        validate_non_empty(diagnostics, format!("{prefix}.name"), &self.name);
+        validate_non_empty(
+            diagnostics,
+            format!("{prefix}.executable"),
+            &self.executable,
+        );
+        validate_absolute_path(
+            diagnostics,
+            format!("{prefix}.executable"),
+            &self.executable,
+        );
+
+        for (path_index, path) in self.additional_executables.iter().enumerate() {
+            validate_absolute_path(
+                diagnostics,
+                format!("{prefix}.additional_executables[{path_index}]"),
+                path,
+            );
+        }
+
+        if let Some(role) = &self.role {
+            validate_non_empty(diagnostics, format!("{prefix}.role"), role);
+        }
+        if let Some(started_by) = &self.started_by {
+            validate_non_empty(diagnostics, format!("{prefix}.started_by"), started_by);
+        }
+        if let Some(domain_type) = &self.domain_type {
+            validate_non_empty(diagnostics, format!("{prefix}.domain_type"), domain_type);
+        }
+        if let Some(exec_type) = &self.exec_type {
+            validate_non_empty(diagnostics, format!("{prefix}.exec_type"), exec_type);
+        }
     }
 }
 
@@ -906,6 +1244,10 @@ impl Storage {
 pub struct StoragePath {
     pub path: String,
     pub access: StorageAccess,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selinux_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub justification: Option<String>,
 }
@@ -997,6 +1339,8 @@ pub struct OutboundNetwork {
     pub protocol: NetworkProtocol,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<String>,
 }
 
 /// Developer-facing network protocol names.
@@ -1081,6 +1425,211 @@ impl Ipc {
 pub struct UnixSocket {
     pub path: String,
     pub mode: UnixSocketMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<String>,
+}
+
+/// Structured SELinux-specific policy details.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelinuxPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<SelinuxType>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<SelinuxRole>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transitions: Vec<SelinuxTransition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allows: Vec<SelinuxAllow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub macro_calls: Vec<SelinuxMacroCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filesystem_associations: Vec<SelinuxFilesystemAssociation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissive: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_contexts: Vec<SelinuxFileContext>,
+}
+
+impl SelinuxPolicy {
+    pub fn is_empty(&self) -> bool {
+        self.compatibility.is_none()
+            && self.types.is_empty()
+            && self.roles.is_empty()
+            && self.transitions.is_empty()
+            && self.allows.is_empty()
+            && self.macro_calls.is_empty()
+            && self.filesystem_associations.is_empty()
+            && self.permissive.is_empty()
+            && self.file_contexts.is_empty()
+    }
+
+    fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
+        for (index, entry) in self.types.iter().enumerate() {
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.types[{index}].name"),
+                &entry.name,
+            );
+        }
+        for (index, entry) in self.roles.iter().enumerate() {
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.roles[{index}].role"),
+                &entry.role,
+            );
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.roles[{index}].domain"),
+                &entry.domain,
+            );
+        }
+        for (index, entry) in self.transitions.iter().enumerate() {
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.transitions[{index}].source"),
+                &entry.source,
+            );
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.transitions[{index}].exec_type"),
+                &entry.exec_type,
+            );
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.transitions[{index}].target"),
+                &entry.target,
+            );
+        }
+        for (index, entry) in self.allows.iter().enumerate() {
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.allows[{index}].source"),
+                &entry.source,
+            );
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.allows[{index}].target"),
+                &entry.target,
+            );
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.allows[{index}].class"),
+                &entry.class,
+            );
+            if entry.permissions.is_empty() {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "selinux.allows[{index}].permissions must not be empty"
+                    ))
+                    .help("add one or more SELinux permissions"),
+                );
+            }
+        }
+        for (index, entry) in self.macro_calls.iter().enumerate() {
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.macro_calls[{index}].name"),
+                &entry.name,
+            );
+        }
+        for (index, entry) in self.filesystem_associations.iter().enumerate() {
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.filesystem_associations[{index}].type_name"),
+                &entry.type_name,
+            );
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.filesystem_associations[{index}].filesystem_type"),
+                &entry.filesystem_type,
+            );
+        }
+        for (index, entry) in self.file_contexts.iter().enumerate() {
+            validate_absolute_path(
+                diagnostics,
+                format!("selinux.file_contexts[{index}].path"),
+                &entry.path,
+            );
+            validate_non_empty(
+                diagnostics,
+                format!("selinux.file_contexts[{index}].type_name"),
+                &entry.type_name,
+            );
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelinuxType {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelinuxRole {
+    pub role: String,
+    pub domain: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelinuxTransition {
+    pub source: String,
+    pub exec_type: String,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelinuxAllow {
+    pub source: String,
+    pub target: String,
+    pub class: String,
+    pub permissions: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelinuxMacroCall {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelinuxFilesystemAssociation {
+    pub type_name: String,
+    pub filesystem_type: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelinuxFileContext {
+    pub path: String,
+    pub type_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_type: Option<String>,
 }
 
 /// Whether the application creates or connects to a socket.
@@ -1557,6 +2106,20 @@ fn validate_kebab_name(diagnostics: &mut Vec<Diagnostic>, field: String, value: 
     }
 }
 
+fn validate_absolute_path(diagnostics: &mut Vec<Diagnostic>, field: String, path: &str) {
+    validate_non_empty(diagnostics, &field, path);
+
+    if !path.starts_with('/') {
+        diagnostics.push(
+            Diagnostic::error(format!("{field} must be an absolute path"))
+                .found(path.to_string())
+                .help(format!("use /{}", path.trim_start_matches('/'))),
+        );
+    } else {
+        validate_path(diagnostics, field, path);
+    }
+}
+
 fn validate_path(diagnostics: &mut Vec<Diagnostic>, field: impl AsRef<str>, path: &str) {
     let field = field.as_ref();
 
@@ -1585,6 +2148,10 @@ fn validate_path(diagnostics: &mut Vec<Diagnostic>, field: impl AsRef<str>, path
                 .help("use a normalized absolute path"),
         );
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn validate_expected_storage_root(
