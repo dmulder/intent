@@ -1,36 +1,82 @@
 # Intent
 
-Intent is a declarative security policy compiler for Linux.
+Intent is an experimental declarative Linux security policy compiler.
 
-The project aims to let application developers describe what their software
-needs to do in a plain, heavily documented `intent.yaml` file. Intent will then
-compile that high-level intent into platform-specific security policies,
-initially SELinux policy and AppArmor profiles.
+It lets developers describe what an application is trying to do, then compiles
+that declaration into reviewable SELinux, AppArmor, and related policy
+artifacts.
 
-## Problem
+Generated policy is not automatically secure. Intent is meant to make security
+intent easier to express, discuss, review, and regenerate. The generated output
+should be treated as a starting point for human review, testing, and hardening.
 
-Linux mandatory access control systems are powerful, but their policy languages
-are specialized and difficult for many application developers to write by hand.
-That creates a gap: the people who understand an application best often cannot
-easily express the least-privilege policy it needs, while security engineers
-must reverse-engineer application behavior from documentation, source code, and
-audit logs.
+## What is Intent?
 
-Intent is intended to make that workflow more direct:
+Intent is a command-line tool and schema for writing application security intent
+in `intent.yaml`.
 
-- Developers describe application behavior in `intent.yaml`.
-- Intent validates the declared behavior against a simple schema.
-- Intent compiles the declaration into SELinux and AppArmor outputs, with
-  advisory systemd hardening suggestions as a complementary target.
-- Intent reads SELinux and AppArmor audit logs and suggests higher-level intent
-  entries that can be reviewed and added to `intent.yaml`.
+Instead of starting with low-level policy rules, an `intent.yaml` describes
+application behavior:
 
-## Current Status
+- which executable runs
+- which user and group it runs as
+- which configuration, state, cache, and runtime paths it uses
+- which outbound network destinations it needs
+- which Unix sockets and D-Bus services it uses
+- which Linux capabilities are part of the application design
 
-This repository currently contains the first `intent.yaml` schema, YAML parsing,
-validation, initial SELinux and AppArmor compiler backends, advisory systemd
-hardening suggestions, and audit-log observation that suggests reviewable intent
-additions.
+Intent validates that document, normalizes it into an internal representation,
+and emits platform-specific artifacts such as SELinux type-enforcement modules,
+SELinux file contexts, AppArmor profiles, and advisory systemd hardening
+drop-ins.
+
+## Why does this exist?
+
+SELinux and AppArmor are powerful, but their policy languages operate at a low
+level. They describe labels, types, classes, path rules, permissions, and
+kernel-mediated access checks.
+
+Most developers do not think about their software that way. They think in terms
+of application intent:
+
+- "This service reads configuration from `/etc/my-service`."
+- "This daemon writes state under `/var/lib/my-service`."
+- "This process listens on one Unix socket."
+- "This application connects to an HTTPS API."
+
+That mismatch creates a difficult workflow. Developers know what the application
+is supposed to do, while security engineers often have to infer that behavior
+from source code, packaging, operational knowledge, and audit logs.
+
+Existing tools can help, but many denial-driven workflows translate audit
+denials directly into allow rules. That can be useful for debugging, but a
+denial only says what the program tried to do. It does not explain why the
+access happened, whether it was expected, whether it is portable across policy
+systems, or whether it should be allowed.
+
+Intent tries to keep the higher-level reason in the loop:
+
+```text
+application behavior -> declared intent -> generated policy -> audit feedback -> reviewed intent
+```
+
+The goal is not to hide SELinux or AppArmor. The goal is to give developers and
+reviewers a clearer artifact to discuss before low-level policy is accepted.
+
+## What Intent is not
+
+Intent is not a security guarantee.
+
+It is also not:
+
+- a replacement for SELinux or AppArmor expertise
+- a proof that generated policy is least-privilege
+- an `audit2allow` clone
+- a tool for blindly granting everything seen in audit logs
+- a complete model of every Linux security mechanism
+- production-ready policy generation for arbitrary services
+
+Intent should help explain and review policy. It should not remove review.
 
 ## Example `intent.yaml`
 
@@ -50,6 +96,9 @@ storage:
       access: read
   state:
     - path: /var/lib/my-service
+      access: read-write
+  runtime:
+    - path: /run/my-service
       access: read-write
 
 network:
@@ -73,110 +122,155 @@ notes:
   - Keep this file focused on application behavior, not SELinux or AppArmor details.
 ```
 
-## CLI
+Validate a document:
 
 ```sh
-intent validate <intent.yaml>
-intent build <intent.yaml> --target selinux|apparmor|systemd|all [--output <dir>]
-intent observe --source <audit.log> --format selinux|apparmor
-intent explain <intent.yaml>
-intent schema [--format markdown|json-schema]
+cargo run -- validate examples/minimal.intent.yaml
 ```
 
-Schema documentation is also checked in at `docs/intent-yaml.md`, with a JSON
-Schema at `schema/intent.schema.json`.
-
-## AppArmor Build Example
-
-Print an AppArmor profile to stdout:
+Print a human-readable explanation of the normalized intent:
 
 ```sh
-intent build examples/himmelblaud.intent.yaml --target apparmor
+cargo run -- explain examples/minimal.intent.yaml
 ```
 
-Write the generated profile to `build/himmelblaud.apparmor`:
+## Build SELinux policy
+
+Print a reviewable SELinux type-enforcement module and file-context rules:
 
 ```sh
-intent build examples/himmelblaud.intent.yaml --target apparmor --output build/
+cargo run -- build examples/himmelblau/intent.yaml --target selinux
 ```
 
-## SELinux Build Example
-
-Print a reviewable SELinux type-enforcement module to stdout:
+Write the generated files to a directory:
 
 ```sh
-intent build examples/himmelblaud.intent.yaml --target selinux
+cargo run -- build examples/himmelblau/intent.yaml --target selinux --output build/
 ```
 
-Write the generated module and suggested file contexts to `build/himmelblaud.te` and `build/himmelblaud.fc`:
+This writes files such as:
+
+- `build/himmelblaud.te`
+- `build/himmelblaud.fc`
+
+Review the generated SELinux output before using it. The compiler currently
+models only the parts of application behavior represented by the Intent schema.
+
+## Build AppArmor profile
+
+Print a reviewable AppArmor profile:
 
 ```sh
-intent build examples/himmelblaud.intent.yaml --target selinux --output build/
+cargo run -- build examples/himmelblau/intent.yaml --target apparmor
 ```
 
-## systemd Hardening Suggestions
-
-Intent can also generate a reviewable systemd service drop-in with hardening
-suggestions inferred from the same IR:
+Write the generated profile to a directory:
 
 ```sh
-intent build examples/himmelblaud.intent.yaml --target systemd
+cargo run -- build examples/himmelblau/intent.yaml --target apparmor --output build/
 ```
 
-With `--output`, the drop-in is written as `10-intent-hardening.conf`.
+This writes a file such as:
 
-systemd support is advisory. It does not generate a complete unit file, and it
-does not replace SELinux or AppArmor policy. Instead, it suggests conservative
-service-level settings such as `ReadOnlyPaths=`, `ReadWritePaths=`,
-`RuntimeDirectory=`, `CacheDirectory=`, `StateDirectory=`, `NoNewPrivileges=`,
-`PrivateTmp=`, `ProtectSystem=`, `ProtectHome=`, and
-`RestrictAddressFamilies=` where the declared intent gives enough information.
-When a setting might break the application, Intent leaves a comment explaining
-why it was not generated.
+- `build/himmelblaud.apparmor`
 
-## Audit Observation
+Review the generated profile before loading it. Path-based policy still needs
+careful validation against the real package layout, runtime behavior, and host
+environment.
+
+## Observe audit logs
 
 Intent can inspect SELinux AVC logs or AppArmor denial logs and suggest
-high-level `intent.yaml` additions:
+higher-level `intent.yaml` additions:
 
 ```sh
-intent observe --source tests/fixtures/selinux_audit.log --format selinux
-intent observe --source tests/fixtures/apparmor_audit.log --format apparmor
+cargo run -- observe --source tests/fixtures/selinux_audit.log --format selinux
+cargo run -- observe --source tests/fixtures/apparmor_audit.log --format apparmor
 ```
 
-For a guided review, add `--interactive`. Accepted suggestions are written to
-`intent.suggestions.yaml` by default:
+For a guided review, use `--interactive`:
 
 ```sh
-intent observe --source tests/fixtures/selinux_audit.log --format selinux --interactive
+cargo run -- observe --source tests/fixtures/selinux_audit.log --format selinux --interactive
 ```
 
-To merge accepted suggestions directly into an existing intent document, pass
-`--merge-into`. Intent writes a `.bak` copy before modifying the file:
+Accepted suggestions are written to `intent.suggestions.yaml` by default. To
+merge accepted suggestions into an existing intent document:
 
 ```sh
-intent observe --source tests/fixtures/selinux_audit.log --format selinux --interactive --merge-into intent.yaml
+cargo run -- observe --source tests/fixtures/selinux_audit.log --format selinux --interactive --merge-into intent.yaml
 ```
 
-Observation is deliberately not an `audit2allow` clone. Intent does not turn
-audit records directly into SELinux allow rules or AppArmor profile entries.
-Audit logs describe what was denied at a platform-specific enforcement layer;
-they do not prove that the behavior is desirable, least-privilege, or portable
-between MAC systems. Intent keeps the workflow as:
+Intent writes a `.bak` copy before modifying the target file.
+
+Observation deliberately keeps a review step between denial and policy:
 
 ```text
 audit denial -> inferred intent -> human review -> regenerated policy
 ```
 
-That means denied file access might become a reviewed `storage.config`,
-`storage.cache`, `storage.state`, or `storage.runtime` entry; denied outbound
-network connects might become `network.outbound`; and denied Unix socket
-operations might become `ipc.unix_sockets`. After review, rebuilding from
-`intent.yaml` regenerates the platform-specific policy.
+An audit event means access was denied. It does not mean the access was
+intended, appropriate, portable, or safe to allow.
 
-## Development
+## Suggested workflow
 
-CI runs the same checks maintainers should run before sending changes:
+1. Write an initial `intent.yaml` from what the application is supposed to do.
+2. Validate it with `cargo run -- validate <intent.yaml>`.
+3. Generate SELinux, AppArmor, or systemd output with `cargo run -- build`.
+4. Review the generated artifacts as policy drafts.
+5. Test the application under enforcement in a controlled environment.
+6. Feed relevant audit logs into `cargo run -- observe`.
+7. Review each suggested intent change before accepting it.
+8. Regenerate policy from the reviewed `intent.yaml`.
+9. Keep the intent file in source control with the application or packaging.
+
+The important artifact is the reviewed intent, not the raw denial stream.
+
+## Current limitations
+
+Intent is early and incomplete. Current limitations include:
+
+- the schema models a narrow set of daemon-style application behavior
+- generated SELinux and AppArmor output is a compiler snapshot, not final policy
+- some SELinux details are distribution-specific and cannot be inferred safely
+- AppArmor path rules depend on the real installed filesystem layout
+- network intent is higher-level than what every backend can enforce directly
+- D-Bus, PAM/NSS, resolver, certificate, TPM, and system integration are only
+  partially represented
+- multi-process applications and helper domains need richer modeling
+- audit observation can miss context or infer the wrong high-level reason
+
+Use the output for review and iteration, not as a blanket permission grant.
+
+## Project status
+
+Intent currently includes:
+
+- an `intent.yaml` schema
+- YAML parsing and validation
+- normalized internal representation output via `explain`
+- SELinux policy generation
+- AppArmor profile generation
+- advisory systemd hardening drop-in generation
+- SELinux and AppArmor audit-log observation
+- snapshot and regression tests
+
+The project is experimental. Interfaces, schema fields, generated output, and
+review workflows may change as the model improves.
+
+## Contributing
+
+Contributions are welcome, especially in areas that make intent clearer and
+review safer:
+
+- schema improvements that capture real application behavior without leaking
+  backend-specific policy syntax into `intent.yaml`
+- compiler fixes for SELinux, AppArmor, and systemd output
+- audit-observation improvements that explain why a suggestion was made
+- realistic examples with documented gaps
+- tests that prevent accidental broadening of generated policy
+
+Before sending changes, run:
 
 ```sh
 cargo fmt --check
@@ -184,12 +278,8 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Regression tests live under `tests/`. Generated backend output, normalized IR,
-audit-observer output, and validation diagnostics are covered with checked-in
-snapshots under `tests/snapshots/`.
-
-When an intentional compiler, validation, or audit-observer change alters a
-snapshot, update the snapshots and review the diff:
+If an intentional compiler, validation, or observer change updates generated
+output, refresh and review the snapshots:
 
 ```sh
 UPDATE_SNAPSHOTS=1 cargo test
