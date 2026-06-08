@@ -8,7 +8,9 @@ use intent::audit::{
     apparmor as apparmor_audit, merge_value, merge_yaml_fragments, selinux as selinux_audit,
     AuditFormat, ReviewSuggestion,
 };
-use intent::compiler::{apparmor as apparmor_compiler, selinux as selinux_compiler, Target};
+use intent::compiler::{
+    apparmor as apparmor_compiler, selinux as selinux_compiler, systemd as systemd_compiler, Target,
+};
 use intent::config::IntentConfig;
 use intent::schema::{json_schema, markdown_documentation, ValidationOptions};
 
@@ -108,7 +110,7 @@ fn parse_validate(args: &[String]) -> Result<Cli, String> {
 fn parse_build(args: &[String]) -> Result<Cli, String> {
     let Some(intent_path) = args.first() else {
         return Err(
-            "usage: intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]"
+            "usage: intent build <intent.yaml> --target selinux|apparmor|systemd|all [--output <dir>]"
                 .to_string(),
         );
     };
@@ -121,7 +123,9 @@ fn parse_build(args: &[String]) -> Result<Cli, String> {
         match args[index].as_str() {
             "--target" => {
                 let Some(value) = args.get(index + 1) else {
-                    return Err("missing value for --target selinux|apparmor|all".to_string());
+                    return Err(
+                        "missing value for --target selinux|apparmor|systemd|all".to_string()
+                    );
                 };
                 target = Some(
                     value
@@ -139,14 +143,14 @@ fn parse_build(args: &[String]) -> Result<Cli, String> {
             }
             other => {
                 return Err(format!(
-                    "unknown build option '{other}'; usage: intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]"
+                    "unknown build option '{other}'; usage: intent build <intent.yaml> --target selinux|apparmor|systemd|all [--output <dir>]"
                 ));
             }
         }
     }
 
     let Some(target) = target else {
-        return Err("missing required --target selinux|apparmor|all".to_string());
+        return Err("missing required --target selinux|apparmor|systemd|all".to_string());
     };
 
     Ok(Cli::Build {
@@ -354,7 +358,7 @@ fn usage() -> &'static str {
 
 Usage:
   intent validate <intent.yaml> [--deny-warnings]
-  intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]
+  intent build <intent.yaml> --target selinux|apparmor|systemd|all [--output <dir>]
   intent observe --source <audit.log> --format selinux|apparmor [--interactive] [--merge-into <intent.yaml>]
   intent explain <intent.yaml>
   intent schema [--format markdown|json-schema]"
@@ -538,6 +542,10 @@ fn build_stdout_outputs(ir: &intent::ir::PolicyIr, target: Target) -> Vec<(Strin
             apparmor_compiler::profile_file_name(ir),
             apparmor_compiler::compile(ir),
         )],
+        Target::Systemd => vec![(
+            systemd_compiler::dropin_file_name(),
+            systemd_compiler::compile(ir),
+        )],
         Target::All => vec![
             (
                 selinux_compiler::module_file_name(ir),
@@ -546,6 +554,10 @@ fn build_stdout_outputs(ir: &intent::ir::PolicyIr, target: Target) -> Vec<(Strin
             (
                 apparmor_compiler::profile_file_name(ir),
                 apparmor_compiler::compile(ir),
+            ),
+            (
+                systemd_compiler::dropin_file_name(),
+                systemd_compiler::compile(ir),
             ),
         ],
     }
@@ -567,6 +579,10 @@ fn build_file_outputs(ir: &intent::ir::PolicyIr, target: Target) -> Vec<(String,
             apparmor_compiler::profile_file_name(ir),
             apparmor_compiler::compile(ir),
         )],
+        Target::Systemd => vec![(
+            systemd_compiler::dropin_file_name(),
+            systemd_compiler::compile(ir),
+        )],
         Target::All => vec![
             (
                 selinux_compiler::module_file_name(ir),
@@ -579,6 +595,10 @@ fn build_file_outputs(ir: &intent::ir::PolicyIr, target: Target) -> Vec<(String,
             (
                 apparmor_compiler::profile_file_name(ir),
                 apparmor_compiler::compile(ir),
+            ),
+            (
+                systemd_compiler::dropin_file_name(),
+                systemd_compiler::compile(ir),
             ),
         ],
     }

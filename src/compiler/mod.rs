@@ -2,6 +2,7 @@
 
 pub mod apparmor;
 pub mod selinux;
+pub mod systemd;
 
 use std::fmt;
 use std::str::FromStr;
@@ -11,6 +12,7 @@ use std::str::FromStr;
 pub enum Target {
     Selinux,
     AppArmor,
+    Systemd,
     All,
 }
 
@@ -19,6 +21,7 @@ impl Target {
         match self {
             Self::Selinux => "selinux",
             Self::AppArmor => "apparmor",
+            Self::Systemd => "systemd",
             Self::All => "all",
         }
     }
@@ -37,9 +40,10 @@ impl FromStr for Target {
         match value {
             "selinux" => Ok(Self::Selinux),
             "apparmor" => Ok(Self::AppArmor),
+            "systemd" => Ok(Self::Systemd),
             "all" => Ok(Self::All),
             other => Err(format!(
-                "unsupported target '{other}'; expected selinux, apparmor, or all"
+                "unsupported target '{other}'; expected selinux, apparmor, systemd, or all"
             )),
         }
     }

@@ -20,15 +20,17 @@ Intent is intended to make that workflow more direct:
 
 - Developers describe application behavior in `intent.yaml`.
 - Intent validates the declared behavior against a simple schema.
-- Intent compiles the declaration into SELinux and AppArmor outputs.
+- Intent compiles the declaration into SELinux and AppArmor outputs, with
+  advisory systemd hardening suggestions as a complementary target.
 - Intent reads SELinux and AppArmor audit logs and suggests higher-level intent
   entries that can be reviewed and added to `intent.yaml`.
 
 ## Current Status
 
 This repository currently contains the first `intent.yaml` schema, YAML parsing,
-validation, initial SELinux and AppArmor compiler backends, and audit-log
-observation that suggests reviewable intent additions.
+validation, initial SELinux and AppArmor compiler backends, advisory systemd
+hardening suggestions, and audit-log observation that suggests reviewable intent
+additions.
 
 ## Example `intent.yaml`
 
@@ -75,7 +77,7 @@ notes:
 
 ```sh
 intent validate <intent.yaml>
-intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]
+intent build <intent.yaml> --target selinux|apparmor|systemd|all [--output <dir>]
 intent observe --source <audit.log> --format selinux|apparmor
 intent explain <intent.yaml>
 intent schema [--format markdown|json-schema]
@@ -111,6 +113,26 @@ Write the generated module and suggested file contexts to `build/himmelblaud.te`
 ```sh
 intent build examples/himmelblaud.intent.yaml --target selinux --output build/
 ```
+
+## systemd Hardening Suggestions
+
+Intent can also generate a reviewable systemd service drop-in with hardening
+suggestions inferred from the same IR:
+
+```sh
+intent build examples/himmelblaud.intent.yaml --target systemd
+```
+
+With `--output`, the drop-in is written as `10-intent-hardening.conf`.
+
+systemd support is advisory. It does not generate a complete unit file, and it
+does not replace SELinux or AppArmor policy. Instead, it suggests conservative
+service-level settings such as `ReadOnlyPaths=`, `ReadWritePaths=`,
+`RuntimeDirectory=`, `CacheDirectory=`, `StateDirectory=`, `NoNewPrivileges=`,
+`PrivateTmp=`, `ProtectSystem=`, `ProtectHome=`, and
+`RestrictAddressFamilies=` where the declared intent gives enough information.
+When a setting might break the application, Intent leaves a comment explaining
+why it was not generated.
 
 ## Audit Observation
 
