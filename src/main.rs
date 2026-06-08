@@ -1,9 +1,13 @@
 use std::env;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use intent::audit::{apparmor as apparmor_audit, selinux as selinux_audit, AuditFormat};
+use intent::audit::{
+    apparmor as apparmor_audit, merge_value, merge_yaml_fragments, selinux as selinux_audit,
+    AuditFormat, ReviewSuggestion,
+};
 use intent::compiler::{apparmor as apparmor_compiler, selinux as selinux_compiler, Target};
 use intent::config::IntentConfig;
 use intent::schema::ValidationOptions;
@@ -40,6 +44,8 @@ enum Cli {
     Observe {
         source: PathBuf,
         format: AuditFormat,
+        interactive: bool,
+        merge_into: Option<PathBuf>,
     },
     Explain {
         intent_path: PathBuf,
@@ -141,25 +147,66 @@ fn parse_build(args: &[String]) -> Result<Cli, String> {
 }
 
 fn parse_observe(args: &[String]) -> Result<Cli, String> {
-    if args.len() != 4 {
-        return Err(
-            "usage: intent observe --source <audit.log> --format selinux|apparmor".to_string(),
-        );
+    let mut source = None;
+    let mut format = None;
+    let mut interactive = false;
+    let mut merge_into = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--source" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --source <audit.log>".to_string());
+                };
+                source = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--format" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --format selinux|apparmor".to_string());
+                };
+                format = Some(
+                    value
+                        .parse::<AuditFormat>()
+                        .map_err(|err| format!("invalid --format: {err}"))?,
+                );
+                index += 2;
+            }
+            "--interactive" => {
+                interactive = true;
+                index += 1;
+            }
+            "--merge-into" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --merge-into <intent.yaml>".to_string());
+                };
+                merge_into = Some(PathBuf::from(value));
+                index += 2;
+            }
+            other => {
+                return Err(format!(
+                    "unknown observe option '{other}'; usage: intent observe --source <audit.log> --format selinux|apparmor [--interactive] [--merge-into <intent.yaml>]"
+                ));
+            }
+        }
     }
 
-    if args[0] != "--source" {
+    let Some(source) = source else {
         return Err("missing required --source <audit.log>".to_string());
-    }
-
-    if args[2] != "--format" {
+    };
+    let Some(format) = format else {
         return Err("missing required --format selinux|apparmor".to_string());
+    };
+    if merge_into.is_some() && !interactive {
+        return Err("--merge-into requires --interactive".to_string());
     }
 
     Ok(Cli::Observe {
-        source: PathBuf::from(&args[1]),
-        format: args[3]
-            .parse::<AuditFormat>()
-            .map_err(|err| format!("invalid --format: {err}"))?,
+        source,
+        format,
+        interactive,
+        merge_into,
     })
 }
 
@@ -227,18 +274,25 @@ fn run(command: Cli) -> Result<(), String> {
                 }
             }
         }
-        Cli::Observe { source, format } => match format {
-            AuditFormat::Selinux => {
-                let output = selinux_audit::observe_path(&source)
-                    .map_err(|err| format!("failed to read {}: {err}", source.display()))?;
+        Cli::Observe {
+            source,
+            format,
+            interactive,
+            merge_into,
+        } => {
+            let contents = fs::read_to_string(&source)
+                .map_err(|err| format!("failed to read {}: {err}", source.display()))?;
+            if interactive {
+                let suggestions = review_suggestions(format, &contents);
+                run_interactive_review(suggestions, merge_into)?;
+            } else {
+                let output = match format {
+                    AuditFormat::Selinux => selinux_audit::observe(&contents),
+                    AuditFormat::AppArmor => apparmor_audit::observe(&contents),
+                };
                 print!("{output}");
             }
-            AuditFormat::AppArmor => {
-                let output = apparmor_audit::observe_path(&source)
-                    .map_err(|err| format!("failed to read {}: {err}", source.display()))?;
-                print!("{output}");
-            }
-        },
+        }
         Cli::Explain { intent_path } => {
             let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
             print!("{}", config.ir.explain());
@@ -255,8 +309,176 @@ fn usage() -> &'static str {
 Usage:
   intent validate <intent.yaml> [--deny-warnings]
   intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]
-  intent observe --source <audit.log> --format selinux|apparmor
+  intent observe --source <audit.log> --format selinux|apparmor [--interactive] [--merge-into <intent.yaml>]
   intent explain <intent.yaml>"
+}
+
+fn review_suggestions(format: AuditFormat, contents: &str) -> Vec<ReviewSuggestion> {
+    match format {
+        AuditFormat::Selinux => selinux_audit::review_suggestions(contents),
+        AuditFormat::AppArmor => apparmor_audit::review_suggestions(contents),
+    }
+}
+
+fn run_interactive_review(
+    suggestions: Vec<ReviewSuggestion>,
+    merge_into: Option<PathBuf>,
+) -> Result<(), String> {
+    if suggestions.is_empty() {
+        println!("No denials with high-level Intent suggestions detected.");
+        return Ok(());
+    }
+
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let mut stdout = io::stdout();
+    let mut accepted = Vec::new();
+
+    for (index, suggestion) in suggestions.iter().enumerate() {
+        let mut proposed_yaml = suggestion.yaml.clone();
+        loop {
+            print_interactive_suggestion(index, suggestions.len(), suggestion, &proposed_yaml);
+            write!(
+                stdout,
+                "Choose [a]ccept, [r]eject, [e]dit, mark [u]nexpected, [s]how raw event: "
+            )
+            .map_err(|err| err.to_string())?;
+            stdout.flush().map_err(|err| err.to_string())?;
+
+            let choice = read_trimmed_line(&mut input)?;
+            match choice.as_str() {
+                "a" | "accept" => {
+                    accepted.push(proposed_yaml);
+                    println!("Accepted.");
+                    break;
+                }
+                "r" | "reject" => {
+                    println!("Rejected.");
+                    break;
+                }
+                "u" | "unexpected" | "mark unexpected" => {
+                    println!("Marked unexpected.");
+                    break;
+                }
+                "s" | "show" | "raw" | "show raw event" => {
+                    println!("Raw audit event(s):");
+                    for denial in &suggestion.denials {
+                        println!("  {}", denial.raw);
+                    }
+                    println!();
+                }
+                "e" | "edit" => {
+                    println!("Enter replacement YAML. Finish with a single '.' line:");
+                    proposed_yaml = read_multiline_yaml(&mut input)?;
+                }
+                _ => {
+                    println!("Unknown choice.");
+                }
+            }
+        }
+    }
+
+    if accepted.is_empty() {
+        println!("No suggestions accepted.");
+        return Ok(());
+    }
+
+    write_accepted_suggestions(&accepted, merge_into)
+}
+
+fn print_interactive_suggestion(
+    index: usize,
+    total: usize,
+    suggestion: &ReviewSuggestion,
+    proposed_yaml: &str,
+) {
+    println!();
+    println!(
+        "Suggestion {} of {}: {}",
+        index + 1,
+        total,
+        suggestion.summary
+    );
+    println!("Grouped denials: {}", suggestion.denials.len());
+    println!();
+    println!("What was denied:");
+    for (key, value) in &suggestion.denials[0].description {
+        println!("  {key}: {value}");
+    }
+    if suggestion.denials.len() > 1 {
+        println!("  plus {} similar denial(s)", suggestion.denials.len() - 1);
+    }
+    println!();
+    println!("Why Intent mapped it this way:");
+    println!("  {}", suggestion.reason);
+    println!();
+    println!("Proposed YAML fragment:");
+    for line in proposed_yaml.lines() {
+        println!("  {line}");
+    }
+}
+
+fn read_trimmed_line(input: &mut impl BufRead) -> Result<String, String> {
+    let mut line = String::new();
+    let bytes = input.read_line(&mut line).map_err(|err| err.to_string())?;
+    if bytes == 0 {
+        return Ok("reject".to_string());
+    }
+    Ok(line.trim().to_ascii_lowercase())
+}
+
+fn read_multiline_yaml(input: &mut impl BufRead) -> Result<String, String> {
+    let mut yaml = String::new();
+    loop {
+        let mut line = String::new();
+        let bytes = input.read_line(&mut line).map_err(|err| err.to_string())?;
+        if bytes == 0 || line.trim() == "." {
+            break;
+        }
+        yaml.push_str(&line);
+    }
+    Ok(yaml.trim_end().to_string())
+}
+
+fn write_accepted_suggestions(
+    accepted: &[String],
+    merge_into: Option<PathBuf>,
+) -> Result<(), String> {
+    let merged = merge_yaml_fragments(accepted)
+        .map_err(|err| format!("failed to merge accepted YAML suggestions: {err}"))?;
+
+    if let Some(path) = merge_into {
+        let original = fs::read_to_string(&path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        let backup = backup_path(&path);
+        fs::write(&backup, &original)
+            .map_err(|err| format!("failed to write backup {}: {err}", backup.display()))?;
+
+        let mut original_yaml: serde_yaml::Value = serde_yaml::from_str(&original)
+            .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
+        let accepted_yaml: serde_yaml::Value = serde_yaml::from_str(&merged)
+            .map_err(|err| format!("failed to parse accepted suggestions: {err}"))?;
+        merge_value(&mut original_yaml, accepted_yaml);
+        let contents = serde_yaml::to_string(&original_yaml)
+            .map_err(|err| format!("failed to render merged YAML: {err}"))?;
+        fs::write(&path, contents)
+            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+        println!("Backed up {} to {}", path.display(), backup.display());
+        println!("Merged accepted suggestions into {}", path.display());
+    } else {
+        let path = PathBuf::from("intent.suggestions.yaml");
+        fs::write(&path, merged)
+            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+        println!("Wrote accepted suggestions to {}", path.display());
+    }
+
+    Ok(())
+}
+
+fn backup_path(path: &std::path::Path) -> PathBuf {
+    let mut backup = path.as_os_str().to_os_string();
+    backup.push(".bak");
+    PathBuf::from(backup)
 }
 
 fn build_stdout_outputs(ir: &intent::ir::PolicyIr, target: Target) -> Vec<(String, String)> {
@@ -388,8 +610,48 @@ mod tests {
             ])),
             Ok(Cli::Observe {
                 source: PathBuf::from("audit.log"),
-                format: AuditFormat::AppArmor
+                format: AuditFormat::AppArmor,
+                interactive: false,
+                merge_into: None
             })
+        );
+    }
+
+    #[test]
+    fn parses_interactive_observe() {
+        assert_eq!(
+            Cli::parse(args(&[
+                "observe",
+                "--source",
+                "audit.log",
+                "--format",
+                "selinux",
+                "--interactive",
+                "--merge-into",
+                "intent.yaml"
+            ])),
+            Ok(Cli::Observe {
+                source: PathBuf::from("audit.log"),
+                format: AuditFormat::Selinux,
+                interactive: true,
+                merge_into: Some(PathBuf::from("intent.yaml"))
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_merge_into_without_interactive_review() {
+        assert_eq!(
+            Cli::parse(args(&[
+                "observe",
+                "--source",
+                "audit.log",
+                "--format",
+                "selinux",
+                "--merge-into",
+                "intent.yaml"
+            ])),
+            Err("--merge-into requires --interactive".to_string())
         );
     }
 

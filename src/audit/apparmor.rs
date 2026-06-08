@@ -4,9 +4,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use super::{render_review_suggestions, ReviewDenial, ReviewSuggestion};
+
 /// One normalized AppArmor denial from the audit log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DenialEvent {
+    pub raw: String,
     pub profile: Option<String>,
     pub operation: Option<String>,
     pub requested_mask: Option<String>,
@@ -33,6 +36,7 @@ pub enum DenialTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntentSuggestion {
     pub summary: String,
+    pub reason: String,
     pub yaml: String,
 }
 
@@ -44,39 +48,12 @@ pub fn observe_path(source: &Path) -> Result<String, std::io::Error> {
 
 /// Parse an AppArmor audit log and render reviewable intent suggestions.
 pub fn observe(contents: &str) -> String {
-    let events = parse_audit_log(contents);
+    render_review_suggestions("AppArmor", &review_suggestions(contents))
+}
 
-    if events.is_empty() {
-        return "No AppArmor denials detected.".to_string();
-    }
-
-    let mut output = String::new();
-    for (index, event) in events.iter().enumerate() {
-        if index > 0 {
-            push_line(&mut output, "");
-        }
-
-        push_event(&mut output, event);
-        if let Some(suggestion) = infer_intent(event) {
-            push_line(&mut output, "");
-            push_line(&mut output, "Likely intent:");
-            push_line(&mut output, &format!("  {}", suggestion.summary));
-            push_line(&mut output, "");
-            push_line(&mut output, "Suggested intent.yaml addition:");
-            for line in suggestion.yaml.lines() {
-                push_line(&mut output, &format!("  {line}"));
-            }
-        } else {
-            push_line(&mut output, "");
-            push_line(&mut output, "Likely intent:");
-            push_line(
-                &mut output,
-                "  No high-level Intent mapping inferred yet; review manually.",
-            );
-        }
-    }
-
-    output
+/// Parse an AppArmor audit log and return grouped high-level suggestions.
+pub fn review_suggestions(contents: &str) -> Vec<ReviewSuggestion> {
+    group_suggestions(parse_audit_log(contents))
 }
 
 /// Parse AppArmor denials into structured events.
@@ -95,6 +72,7 @@ pub fn infer_intent(event: &DenialEvent) -> Option<IntentSuggestion> {
         DenialTarget::UnixSocket => infer_unix_socket_intent(event),
         DenialTarget::Network { .. } if is_connect_operation(event) => Some(IntentSuggestion {
             summary: "outbound network access".to_string(),
+            reason: "an AppArmor network connect denial maps to portable outbound network intent instead of a profile-specific rule".to_string(),
             yaml: network_yaml(event),
         }),
         DenialTarget::Network { .. } => None,
@@ -111,6 +89,7 @@ fn parse_denial_line(line: &str) -> DenialEvent {
     let target = classify_target(&fields, family.clone(), sock_type.clone(), protocol.clone());
 
     DenialEvent {
+        raw: line.to_string(),
         profile: fields.get("profile").cloned(),
         operation: fields.get("operation").cloned(),
         requested_mask: fields.get("requested_mask").cloned(),
@@ -124,25 +103,51 @@ fn parse_denial_line(line: &str) -> DenialEvent {
     }
 }
 
-fn push_event(output: &mut String, event: &DenialEvent) {
-    push_line(output, "Detected AppArmor denial:");
+fn group_suggestions(events: Vec<DenialEvent>) -> Vec<ReviewSuggestion> {
+    let mut suggestions = Vec::<ReviewSuggestion>::new();
+
+    for event in events {
+        let Some(suggestion) = infer_intent(&event) else {
+            continue;
+        };
+        let denial = review_denial(&event);
+        if let Some(existing) = suggestions
+            .iter_mut()
+            .find(|existing| existing.yaml == suggestion.yaml)
+        {
+            existing.denials.push(denial);
+        } else {
+            suggestions.push(ReviewSuggestion {
+                summary: suggestion.summary,
+                reason: suggestion.reason,
+                yaml: suggestion.yaml,
+                denials: vec![denial],
+            });
+        }
+    }
+
+    suggestions
+}
+
+fn review_denial(event: &DenialEvent) -> ReviewDenial {
+    let mut description = Vec::new();
     if let Some(profile) = &event.profile {
-        push_line(output, &format!("  profile: {profile}"));
+        description.push(("profile".to_string(), profile.clone()));
     }
     if let Some(operation) = &event.operation {
-        push_line(output, &format!("  operation: {operation}"));
+        description.push(("operation".to_string(), operation.clone()));
     }
     if let Some(mask) = &event.requested_mask {
-        push_line(output, &format!("  requested_mask: {mask}"));
+        description.push(("requested_mask".to_string(), mask.clone()));
     }
     if let Some(mask) = &event.denied_mask {
-        push_line(output, &format!("  denied_mask: {mask}"));
+        description.push(("denied_mask".to_string(), mask.clone()));
     }
     if let Some(name) = &event.name {
-        push_line(output, &format!("  name: {name}"));
+        description.push(("name".to_string(), name.clone()));
     }
     if let Some(peer_profile) = &event.peer_profile {
-        push_line(output, &format!("  peer_profile: {peer_profile}"));
+        description.push(("peer_profile".to_string(), peer_profile.clone()));
     }
     if let DenialTarget::Network {
         family,
@@ -161,8 +166,13 @@ fn push_event(output: &mut String, event: &DenialEvent) {
             values.push(format!("protocol={protocol}"));
         }
         if !values.is_empty() {
-            push_line(output, &format!("  socket: {}", values.join(", ")));
+            description.push(("socket".to_string(), values.join(", ")));
         }
+    }
+
+    ReviewDenial {
+        description,
+        raw: event.raw.clone(),
     }
 }
 
@@ -172,6 +182,9 @@ fn infer_storage_intent(event: &DenialEvent) -> Option<IntentSuggestion> {
 
     Some(IntentSuggestion {
         summary: format!("persistent {purpose} storage"),
+        reason: format!(
+            "the denied path is under {base_path}, which matches Intent's {purpose} storage convention"
+        ),
         yaml: format!(
             "storage:\n  {purpose}:\n    - path: {base_path}\n      access: {}",
             storage_access(event).as_str()
@@ -192,6 +205,7 @@ fn infer_unix_socket_intent(event: &DenialEvent) -> Option<IntentSuggestion> {
 
     Some(IntentSuggestion {
         summary: "Unix domain socket IPC".to_string(),
+        reason: "an AppArmor Unix socket denial maps to ipc.unix_sockets with client/server mode inferred from the denied operation or mask".to_string(),
         yaml: format!("ipc:\n  unix_sockets:\n    - path: {path}\n      mode: {mode}"),
     })
 }
@@ -491,17 +505,40 @@ type=1400 audit(1718123813.055:423): apparmor="DENIED" operation="connect" class
     fn renders_observe_output_with_suggestions() {
         let output = observe(SAMPLE);
 
-        assert!(output.contains("Detected AppArmor denial:"));
+        assert!(output.contains("Suggestion 1 of 4:"));
+        assert!(output.contains("What was denied:"));
         assert!(output.contains("profile: himmelblaud"));
         assert!(output.contains("operation: open"));
         assert!(output.contains("requested_mask: r"));
         assert!(output.contains("denied_mask: r"));
         assert!(output.contains("name: /etc/himmelblaud/config.yaml"));
+        assert!(output.contains("Why Intent mapped it this way:"));
         assert!(output.contains("persistent config storage"));
         assert!(output.contains("storage:\n    config:\n      - path: /etc/himmelblaud"));
         assert!(output.contains("socket: family=inet, sock_type=stream, protocol=6"));
         assert!(output.contains("network:\n    outbound:"));
         assert!(output.contains("ipc:\n    unix_sockets:"));
         assert!(output.contains("peer_profile: unconfined"));
+    }
+
+    #[test]
+    fn groups_similar_denials_into_one_suggestion() {
+        let input = r#"type=1400 audit(1718123810.015:420): apparmor="DENIED" operation="open" class="file" profile="himmelblaud" name="/var/cache/himmelblaud/tokens.db" requested_mask="rw" denied_mask="w"
+type=1400 audit(1718123811.015:421): apparmor="DENIED" operation="open" class="file" profile="himmelblaud" name="/var/cache/himmelblaud/other.db" requested_mask="rw" denied_mask="w""#;
+
+        let suggestions = review_suggestions(input);
+
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].summary, "persistent cache storage");
+        assert_eq!(suggestions[0].denials.len(), 2);
+    }
+
+    #[test]
+    fn generates_non_interactive_grouped_suggestions() {
+        let output = observe(SAMPLE);
+
+        assert!(output.contains("Grouped denials: 1"));
+        assert!(output.contains("Proposed YAML fragment:"));
+        assert!(output.contains("port: 443"));
     }
 }

@@ -118,6 +118,20 @@ intent observe --source tests/fixtures/selinux_audit.log --format selinux
 intent observe --source tests/fixtures/apparmor_audit.log --format apparmor
 ```
 
+For a guided review, add `--interactive`. Accepted suggestions are written to
+`intent.suggestions.yaml` by default:
+
+```sh
+intent observe --source tests/fixtures/selinux_audit.log --format selinux --interactive
+```
+
+To merge accepted suggestions directly into an existing intent document, pass
+`--merge-into`. Intent writes a `.bak` copy before modifying the file:
+
+```sh
+intent observe --source tests/fixtures/selinux_audit.log --format selinux --interactive --merge-into intent.yaml
+```
+
 Observation is deliberately not an `audit2allow` clone. Intent does not turn
 audit records directly into SELinux allow rules or AppArmor profile entries.
 Audit logs describe what was denied at a platform-specific enforcement layer;

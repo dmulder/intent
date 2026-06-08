@@ -5,9 +5,12 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use super::{render_review_suggestions, ReviewDenial, ReviewSuggestion};
+
 /// One normalized SELinux AVC denial from the audit log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DenialEvent {
+    pub raw: String,
     pub audit_id: Option<String>,
     pub process: Option<String>,
     pub executable: Option<String>,
@@ -59,6 +62,7 @@ impl NetworkProtocol {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntentSuggestion {
     pub summary: String,
+    pub reason: String,
     pub yaml: String,
 }
 
@@ -70,39 +74,14 @@ pub fn observe_path(source: &Path) -> Result<String, std::io::Error> {
 
 /// Parse a SELinux audit log and render reviewable intent suggestions.
 pub fn observe(contents: &str) -> String {
-    let events = parse_audit_log(contents);
+    let suggestions = review_suggestions(contents);
 
-    if events.is_empty() {
-        return "No SELinux AVC denials detected.".to_string();
-    }
+    render_review_suggestions("SELinux AVC", &suggestions)
+}
 
-    let mut output = String::new();
-    for (index, event) in events.iter().enumerate() {
-        if index > 0 {
-            push_line(&mut output, "");
-        }
-
-        push_event(&mut output, event);
-        if let Some(suggestion) = infer_intent(event) {
-            push_line(&mut output, "");
-            push_line(&mut output, "Likely intent:");
-            push_line(&mut output, &format!("  {}", suggestion.summary));
-            push_line(&mut output, "");
-            push_line(&mut output, "Suggested intent.yaml addition:");
-            for line in suggestion.yaml.lines() {
-                push_line(&mut output, &format!("  {line}"));
-            }
-        } else {
-            push_line(&mut output, "");
-            push_line(&mut output, "Likely intent:");
-            push_line(
-                &mut output,
-                "  No high-level Intent mapping inferred yet; review manually.",
-            );
-        }
-    }
-
-    output
+/// Parse a SELinux audit log and return grouped high-level suggestions.
+pub fn review_suggestions(contents: &str) -> Vec<ReviewSuggestion> {
+    group_suggestions(parse_audit_log(contents))
 }
 
 /// Parse SELinux AVC denials into structured events.
@@ -133,6 +112,7 @@ pub fn parse_audit_log(contents: &str) -> Vec<DenialEvent> {
                 audit_id,
                 fields,
                 access: parse_denied_access(line),
+                raw: line.to_string(),
             });
         }
     }
@@ -153,6 +133,7 @@ pub fn parse_audit_log(contents: &str) -> Vec<DenialEvent> {
             let target = classify_target(&object_class, &avc.fields);
 
             DenialEvent {
+                raw: avc.raw,
                 audit_id: avc.audit_id,
                 process: avc.fields.get("comm").cloned(),
                 executable: avc.fields.get("exe").cloned(),
@@ -174,6 +155,7 @@ pub fn infer_intent(event: &DenialEvent) -> Option<IntentSuggestion> {
         DenialTarget::UnixSocket => infer_unix_socket_intent(event),
         DenialTarget::Network { protocol, port } => Some(IntentSuggestion {
             summary: "outbound network access".to_string(),
+            reason: "a socket denial maps to portable outbound network intent instead of a backend-specific allow rule".to_string(),
             yaml: network_yaml(*protocol, *port),
         }),
         DenialTarget::Capability => infer_capability_intent(event),
@@ -189,20 +171,53 @@ struct AvcRecord {
     audit_id: Option<String>,
     fields: HashMap<String, String>,
     access: Vec<String>,
+    raw: String,
 }
 
-fn push_event(output: &mut String, event: &DenialEvent) {
-    push_line(output, "Detected SELinux denial:");
+fn group_suggestions(events: Vec<DenialEvent>) -> Vec<ReviewSuggestion> {
+    let mut suggestions = Vec::<ReviewSuggestion>::new();
+
+    for event in events {
+        let Some(suggestion) = infer_intent(&event) else {
+            continue;
+        };
+        let denial = review_denial(&event);
+        if let Some(existing) = suggestions
+            .iter_mut()
+            .find(|existing| existing.yaml == suggestion.yaml)
+        {
+            existing.denials.push(denial);
+        } else {
+            suggestions.push(ReviewSuggestion {
+                summary: suggestion.summary,
+                reason: suggestion.reason,
+                yaml: suggestion.yaml,
+                denials: vec![denial],
+            });
+        }
+    }
+
+    suggestions
+}
+
+fn review_denial(event: &DenialEvent) -> ReviewDenial {
+    let mut description = Vec::new();
     if let Some(process) = &event.process {
-        push_line(output, &format!("  process: {process}"));
+        description.push(("process".to_string(), process.clone()));
     }
     if let Some(path) = &event.path {
-        push_line(output, &format!("  path: {path}"));
+        description.push(("path".to_string(), path.clone()));
     }
     if !event.access.is_empty() {
-        push_line(output, &format!("  access: {}", event.access.join(", ")));
+        description.push(("access".to_string(), event.access.join(", ")));
     }
-    push_line(output, &format!("  class: {}", event.object_class));
+    description.push(("class".to_string(), event.object_class.clone()));
+    description.push(("target".to_string(), event.target.to_string()));
+
+    ReviewDenial {
+        description,
+        raw: event.raw.clone(),
+    }
 }
 
 fn infer_storage_intent(event: &DenialEvent) -> Option<IntentSuggestion> {
@@ -212,6 +227,9 @@ fn infer_storage_intent(event: &DenialEvent) -> Option<IntentSuggestion> {
 
     Some(IntentSuggestion {
         summary: format!("persistent {purpose} storage"),
+        reason: format!(
+            "the denied path is under {base_path}, which matches Intent's {purpose} storage convention"
+        ),
         yaml: format!(
             "storage:\n  {purpose}:\n    - path: {base_path}\n      access: {}",
             access.as_str()
@@ -233,6 +251,7 @@ fn infer_unix_socket_intent(event: &DenialEvent) -> Option<IntentSuggestion> {
 
     Some(IntentSuggestion {
         summary: "Unix domain socket IPC".to_string(),
+        reason: "a Unix socket denial maps to ipc.unix_sockets with client/server mode inferred from the requested socket operation".to_string(),
         yaml: format!("ipc:\n  unix_sockets:\n    - path: {path}\n      mode: {mode}"),
     })
 }
@@ -257,6 +276,8 @@ fn infer_capability_intent(event: &DenialEvent) -> Option<IntentSuggestion> {
 
     Some(IntentSuggestion {
         summary: "Linux capability".to_string(),
+        reason: "a SELinux capability denial maps to a named Linux capability in high-level intent"
+            .to_string(),
         yaml,
     })
 }
@@ -281,6 +302,7 @@ fn infer_dbus_intent(
 
     Some(IntentSuggestion {
         summary: summary.to_string(),
+        reason: "a SELinux dbus denial maps to D-Bus communication or ownership intent on the matching bus name".to_string(),
         yaml: format!("ipc:\n  dbus:\n    {bus}:\n      {action}:\n        - {name}"),
     })
 }
@@ -576,15 +598,39 @@ type=AVC msg=audit(1718123814.055:424): avc:  denied  { send_msg } for  pid=1234
     fn renders_observe_output_with_suggestions() {
         let output = observe(SAMPLE);
 
-        assert!(output.contains("Detected SELinux denial:"));
+        assert!(output.contains("Suggestion 1 of 5:"));
+        assert!(output.contains("What was denied:"));
         assert!(output.contains("process: himmelblaud"));
         assert!(output.contains("path: /var/cache/himmelblaud/tokens.db"));
-        assert!(output.contains("Likely intent:"));
+        assert!(output.contains("Why Intent mapped it this way:"));
         assert!(output.contains("persistent cache storage"));
         assert!(output.contains("storage:\n    cache:\n      - path: /var/cache/himmelblaud"));
         assert!(output.contains("network:\n    outbound:"));
         assert!(output.contains("capabilities:\n    - net-bind-service"));
         assert!(output.contains("ipc:\n    unix_sockets:"));
         assert!(output.contains("ipc:\n    dbus:"));
+    }
+
+    #[test]
+    fn groups_similar_denials_into_one_suggestion() {
+        let input = r#"type=AVC msg=audit(1718123810.015:420): avc:  denied  { write } for  pid=1234 comm="himmelblaud" name="tokens.db" tclass=file
+type=PATH msg=audit(1718123810.015:420): item=0 name="/var/cache/himmelblaud/tokens.db"
+type=AVC msg=audit(1718123811.015:421): avc:  denied  { append } for  pid=1234 comm="himmelblaud" name="other.db" tclass=file
+type=PATH msg=audit(1718123811.015:421): item=0 name="/var/cache/himmelblaud/other.db""#;
+
+        let suggestions = review_suggestions(input);
+
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].summary, "persistent cache storage");
+        assert_eq!(suggestions[0].denials.len(), 2);
+    }
+
+    #[test]
+    fn generates_non_interactive_grouped_suggestions() {
+        let output = observe(SAMPLE);
+
+        assert!(output.contains("Grouped denials: 1"));
+        assert!(output.contains("Proposed YAML fragment:"));
+        assert!(output.contains("port: 443"));
     }
 }

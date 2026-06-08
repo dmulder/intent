@@ -1,4 +1,5 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::{env, fs};
 
 fn intent() -> Command {
@@ -28,7 +29,8 @@ fn starts_and_prints_help() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
     assert!(stdout.contains("intent validate <intent.yaml>"));
     assert!(stdout.contains("intent build <intent.yaml> --target selinux|apparmor|all"));
-    assert!(stdout.contains("intent observe --source <audit.log> --format selinux|apparmor"));
+    assert!(stdout
+        .contains("intent observe --source <audit.log> --format selinux|apparmor [--interactive]"));
     assert!(stdout.contains("intent explain <intent.yaml>"));
 }
 
@@ -147,7 +149,8 @@ fn recognizes_observe_formats() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
-    assert!(stdout.contains("Detected SELinux denial:"));
+    assert!(stdout.contains("Suggestion 1 of"));
+    assert!(stdout.contains("What was denied:"));
     assert!(stdout.contains("process: himmelblaud"));
     assert!(stdout.contains("path: /var/cache/himmelblaud/tokens.db"));
     assert!(stdout.contains("persistent cache storage"));
@@ -166,7 +169,8 @@ fn recognizes_observe_formats() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
-    assert!(stdout.contains("Detected AppArmor denial:"));
+    assert!(stdout.contains("Suggestion 1 of"));
+    assert!(stdout.contains("What was denied:"));
     assert!(stdout.contains("profile: himmelblaud"));
     assert!(stdout.contains("operation: open"));
     assert!(stdout.contains("requested_mask: r"));
@@ -179,6 +183,42 @@ fn recognizes_observe_formats() {
     assert!(stdout.contains("network:\n    outbound:"));
     assert!(stdout.contains("ipc:\n    unix_sockets:"));
     assert!(stdout.contains("peer_profile: unconfined"));
+}
+
+#[test]
+fn interactive_observe_writes_accepted_suggestions_file() {
+    let review_dir = env::temp_dir().join(format!("intent-review-{}", std::process::id()));
+    fs::create_dir_all(&review_dir).expect("review dir should be created");
+    let source =
+        fs::canonicalize("tests/fixtures/selinux_audit.log").expect("fixture path should resolve");
+
+    let mut child = intent()
+        .current_dir(&review_dir)
+        .arg("observe")
+        .arg("--source")
+        .arg(source)
+        .args(["--format", "selinux", "--interactive"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("interactive observe should start");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin should be piped")
+        .write_all(b"a\nr\nr\nr\nr\n")
+        .expect("choices should be written");
+
+    let output = child
+        .wait_with_output()
+        .expect("interactive observe should finish");
+    assert!(output.status.success());
+
+    let suggestions_path = review_dir.join("intent.suggestions.yaml");
+    let suggestions = fs::read_to_string(suggestions_path).expect("suggestions should be written");
+    assert!(suggestions.contains("storage:"));
+    assert!(suggestions.contains("/var/cache/himmelblaud"));
 }
 
 #[test]
