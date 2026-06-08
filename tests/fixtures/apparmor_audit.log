@@ -1,0 +1,6 @@
+type=1400 audit(1718123810.015:420): apparmor="DENIED" operation="open" class="file" profile="himmelblaud" name="/etc/himmelblaud/config.yaml" pid=1234 comm="himmelblaud" requested_mask="r" denied_mask="r" fsuid=0 ouid=0
+type=1400 audit(1718123811.055:421): apparmor="DENIED" operation="open" class="file" profile="himmelblaud" name="/var/cache/himmelblaud/tokens.db" pid=1234 comm="himmelblaud" requested_mask="rw" denied_mask="w" fsuid=0 ouid=0
+type=1400 audit(1718123812.055:422): apparmor="DENIED" operation="open" class="file" profile="himmelblaud" name="/var/lib/himmelblaud/state.db" pid=1234 comm="himmelblaud" requested_mask="rw" denied_mask="w" fsuid=0 ouid=0
+type=1400 audit(1718123813.055:423): apparmor="DENIED" operation="open" class="file" profile="himmelblaud" name="/run/himmelblaud/session" pid=1234 comm="himmelblaud" requested_mask="rw" denied_mask="w" fsuid=0 ouid=0
+type=1400 audit(1718123814.055:424): apparmor="DENIED" operation="connect" class="net" profile="himmelblaud" name="203.0.113.10:443" family="inet" sock_type="stream" protocol=6 requested_mask="connect" denied_mask="connect"
+type=1400 audit(1718123815.055:425): apparmor="DENIED" operation="connect" class="unix" profile="himmelblaud" name="/run/dbus/system_bus_socket" requested_mask="wr" denied_mask="wr" peer_profile="unconfined"

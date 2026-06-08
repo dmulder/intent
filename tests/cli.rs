@@ -154,14 +154,31 @@ fn recognizes_observe_formats() {
     assert!(stdout.contains("storage:\n    cache:\n      - path: /var/cache/himmelblaud"));
 
     let output = intent()
-        .args(["observe", "--source", "audit.log", "--format", "apparmor"])
+        .args([
+            "observe",
+            "--source",
+            "tests/fixtures/apparmor_audit.log",
+            "--format",
+            "apparmor",
+        ])
         .output()
         .expect("intent observe should run");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
-    assert!(stdout.contains("Observe placeholder"));
-    assert!(stdout.contains("apparmor"));
+    assert!(stdout.contains("Detected AppArmor denial:"));
+    assert!(stdout.contains("profile: himmelblaud"));
+    assert!(stdout.contains("operation: open"));
+    assert!(stdout.contains("requested_mask: r"));
+    assert!(stdout.contains("denied_mask: r"));
+    assert!(stdout.contains("name: /etc/himmelblaud/config.yaml"));
+    assert!(stdout.contains("persistent config storage"));
+    assert!(stdout.contains("persistent cache storage"));
+    assert!(stdout.contains("persistent state storage"));
+    assert!(stdout.contains("persistent runtime storage"));
+    assert!(stdout.contains("network:\n    outbound:"));
+    assert!(stdout.contains("ipc:\n    unix_sockets:"));
+    assert!(stdout.contains("peer_profile: unconfined"));
 }
 
 #[test]

@@ -27,8 +27,8 @@ Intent is intended to make that workflow more direct:
 ## Current Status
 
 This repository currently contains the first `intent.yaml` schema, YAML parsing,
-validation, and an initial AppArmor compiler backend. SELinux policy generation
-and audit-log analysis are still placeholder plumbing.
+validation, initial SELinux and AppArmor compiler backends, and audit-log
+observation that suggests reviewable intent additions.
 
 ## Example `intent.yaml`
 
@@ -107,6 +107,32 @@ Write the generated module and suggested file contexts to `build/himmelblaud.te`
 ```sh
 intent build examples/himmelblaud.intent.yaml --target selinux --output build/
 ```
+
+## Audit Observation
+
+Intent can inspect SELinux AVC logs or AppArmor denial logs and suggest
+high-level `intent.yaml` additions:
+
+```sh
+intent observe --source tests/fixtures/selinux_audit.log --format selinux
+intent observe --source tests/fixtures/apparmor_audit.log --format apparmor
+```
+
+Observation is deliberately not an `audit2allow` clone. Intent does not turn
+audit records directly into SELinux allow rules or AppArmor profile entries.
+Audit logs describe what was denied at a platform-specific enforcement layer;
+they do not prove that the behavior is desirable, least-privilege, or portable
+between MAC systems. Intent keeps the workflow as:
+
+```text
+audit denial -> inferred intent -> human review -> regenerated policy
+```
+
+That means denied file access might become a reviewed `storage.config`,
+`storage.cache`, `storage.state`, or `storage.runtime` entry; denied outbound
+network connects might become `network.outbound`; and denied Unix socket
+operations might become `ipc.unix_sockets`. After review, rebuilding from
+`intent.yaml` regenerates the platform-specific policy.
 
 ## Development
 

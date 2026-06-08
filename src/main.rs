@@ -234,12 +234,9 @@ fn run(command: Cli) -> Result<(), String> {
                 print!("{output}");
             }
             AuditFormat::AppArmor => {
-                println!(
-                    "Observe placeholder: reading {} audit log from {}.",
-                    format,
-                    source.display()
-                );
-                println!("{}", apparmor_audit::observe_placeholder(&source))
+                let output = apparmor_audit::observe_path(&source)
+                    .map_err(|err| format!("failed to read {}: {err}", source.display()))?;
+                print!("{output}");
             }
         },
         Cli::Explain { intent_path } => {
