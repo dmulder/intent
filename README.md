@@ -27,8 +27,8 @@ Intent is intended to make that workflow more direct:
 ## Current Status
 
 This repository currently contains the first `intent.yaml` schema, YAML parsing,
-validation, and placeholder compiler/audit plumbing. Policy generation and
-audit-log analysis are not implemented yet.
+validation, and an initial AppArmor compiler backend. SELinux policy generation
+and audit-log analysis are still placeholder plumbing.
 
 ## Example `intent.yaml`
 
@@ -75,9 +75,23 @@ notes:
 
 ```sh
 intent validate <intent.yaml>
-intent build <intent.yaml> --target selinux|apparmor|all
+intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]
 intent observe --source <audit.log> --format selinux|apparmor
 intent explain <intent.yaml>
+```
+
+## AppArmor Build Example
+
+Print an AppArmor profile to stdout:
+
+```sh
+intent build examples/himmelblaud.intent.yaml --target apparmor
+```
+
+Write the generated profile to `build/himmelblaud.apparmor`:
+
+```sh
+intent build examples/himmelblaud.intent.yaml --target apparmor --output build/
 ```
 
 ## Development

@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -34,6 +35,7 @@ enum Cli {
     Build {
         intent_path: PathBuf,
         target: Target,
+        output: Option<PathBuf>,
     },
     Observe {
         source: PathBuf,
@@ -88,21 +90,53 @@ fn parse_validate(args: &[String]) -> Result<Cli, String> {
 }
 
 fn parse_build(args: &[String]) -> Result<Cli, String> {
-    if args.len() != 3 {
-        return Err("usage: intent build <intent.yaml> --target selinux|apparmor|all".to_string());
+    let Some(intent_path) = args.first() else {
+        return Err(
+            "usage: intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]"
+                .to_string(),
+        );
+    };
+
+    let mut target = None;
+    let mut output = None;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--target" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --target selinux|apparmor|all".to_string());
+                };
+                target = Some(
+                    value
+                        .parse::<Target>()
+                        .map_err(|err| format!("invalid --target: {err}"))?,
+                );
+                index += 2;
+            }
+            "--output" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --output <dir>".to_string());
+                };
+                output = Some(PathBuf::from(value));
+                index += 2;
+            }
+            other => {
+                return Err(format!(
+                    "unknown build option '{other}'; usage: intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]"
+                ));
+            }
+        }
     }
 
-    if args[1] != "--target" {
+    let Some(target) = target else {
         return Err("missing required --target selinux|apparmor|all".to_string());
-    }
-
-    let target = args[2]
-        .parse::<Target>()
-        .map_err(|err| format!("invalid --target: {err}"))?;
+    };
 
     Ok(Cli::Build {
-        intent_path: PathBuf::from(&args[0]),
+        intent_path: PathBuf::from(intent_path),
         target,
+        output,
     })
 }
 
@@ -166,34 +200,29 @@ fn run(command: Cli) -> Result<(), String> {
         Cli::Build {
             intent_path,
             target,
+            output,
         } => {
             let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
-            println!(
-                "Build placeholder: compiling {} for target {target}.",
-                intent_path.display()
-            );
-            match target {
-                Target::Selinux => {
-                    println!(
-                        "{}",
-                        selinux_compiler::compile_placeholder(&config.document)
+            let outputs = build_outputs(&config.document, target);
+            if let Some(output) = output {
+                fs::create_dir_all(&output).map_err(|err| {
+                    format!(
+                        "failed to create output directory {}: {err}",
+                        output.display()
                     )
+                })?;
+                for (file_name, contents) in outputs {
+                    let path = output.join(file_name);
+                    fs::write(&path, contents)
+                        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+                    println!("Wrote {}", path.display());
                 }
-                Target::AppArmor => {
-                    println!(
-                        "{}",
-                        apparmor_compiler::compile_placeholder(&config.document)
-                    )
-                }
-                Target::All => {
-                    println!(
-                        "{}",
-                        selinux_compiler::compile_placeholder(&config.document)
-                    );
-                    println!(
-                        "{}",
-                        apparmor_compiler::compile_placeholder(&config.document)
-                    );
+            } else {
+                for (index, (_file_name, contents)) in outputs.into_iter().enumerate() {
+                    if index > 0 {
+                        println!();
+                    }
+                    print!("{contents}");
                 }
             }
         }
@@ -229,9 +258,35 @@ fn usage() -> &'static str {
 
 Usage:
   intent validate <intent.yaml> [--deny-warnings]
-  intent build <intent.yaml> --target selinux|apparmor|all
+  intent build <intent.yaml> --target selinux|apparmor|all [--output <dir>]
   intent observe --source <audit.log> --format selinux|apparmor
   intent explain <intent.yaml>"
+}
+
+fn build_outputs(
+    document: &intent::schema::IntentDocument,
+    target: Target,
+) -> Vec<(String, String)> {
+    match target {
+        Target::Selinux => vec![(
+            format!("{}.selinux", document.application.name),
+            selinux_compiler::compile_placeholder(document),
+        )],
+        Target::AppArmor => vec![(
+            apparmor_compiler::profile_file_name(document),
+            apparmor_compiler::compile(document),
+        )],
+        Target::All => vec![
+            (
+                format!("{}.selinux", document.application.name),
+                selinux_compiler::compile_placeholder(document),
+            ),
+            (
+                apparmor_compiler::profile_file_name(document),
+                apparmor_compiler::compile(document),
+            ),
+        ],
+    }
 }
 
 #[cfg(test)]
@@ -270,7 +325,27 @@ mod tests {
             Cli::parse(args(&["build", "intent.yaml", "--target", "selinux"])),
             Ok(Cli::Build {
                 intent_path: PathBuf::from("intent.yaml"),
-                target: Target::Selinux
+                target: Target::Selinux,
+                output: None
+            })
+        );
+    }
+
+    #[test]
+    fn parses_build_output() {
+        assert_eq!(
+            Cli::parse(args(&[
+                "build",
+                "intent.yaml",
+                "--target",
+                "apparmor",
+                "--output",
+                "build"
+            ])),
+            Ok(Cli::Build {
+                intent_path: PathBuf::from("intent.yaml"),
+                target: Target::AppArmor,
+                output: Some(PathBuf::from("build"))
             })
         );
     }
