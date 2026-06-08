@@ -1,0 +1,6 @@
+# Real-world style file contexts with compatibility paths.
+/usr/bin/himmelblaud         --  gen_context(system_u:object_r:himmelblaud_exec_t,s0)
+/etc/himmelblau(/.*)?                    gen_context(system_u:object_r:himmelblau_etc_t,s0)
+/run/himmelblaud(/.*)?                   gen_context(system_u:object_r:himmelblau_var_run_t,s0)
+/var/cache/private/himmelblaud(/.*)?     gen_context(system_u:object_r:himmelblau_var_cache_t,s0)
+/var/lib/private/himmelblaud(/.*)?       gen_context(system_u:object_r:himmelblau_var_lib_t,s0)

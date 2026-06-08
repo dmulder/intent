@@ -250,6 +250,15 @@ pub fn json_schema() -> &'static str {
                 "minLength": 1
               },
               "description": "Manual SELinux type-enforcement policy fragments inserted into the generated policy module."
+            },
+            "file_contexts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Manual SELinux file-context fragments appended to the generated file-context output."
             }
           }
         },
@@ -655,6 +664,15 @@ fn schema_fields() -> &'static [SchemaField] {
             apparmor: "Not compiled.",
         },
         SchemaField {
+            path: "extensions.selinux.file_contexts[]",
+            required: false,
+            example: "/var/lib/mydaemon(/.*)? gen_context(system_u:object_r:mydaemon_var_lib_t,s0)",
+            validation: "Non-empty SELinux file-context fragment.",
+            security: "Raw SELinux file contexts should be reviewed with the corresponding raw policy.",
+            selinux: "Appended to generated file-context suggestions.",
+            apparmor: "Not compiled.",
+        },
+        SchemaField {
             path: "extensions.apparmor.rules[]",
             required: false,
             example: "capability sys_ptrace,",
@@ -688,22 +706,22 @@ pub struct IntentDocument {
     /// Application identity and launch context.
     pub application: Application,
     /// Files and directories the application expects to use.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Storage::is_empty")]
     pub storage: Storage,
     /// Network access requested by the application.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Network::is_empty")]
     pub network: Network,
     /// Local IPC access requested by the application.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Ipc::is_empty")]
     pub ipc: Ipc,
     /// Linux capabilities requested by friendly name.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
     /// Backend-specific temporary escape hatches.
     #[serde(default, skip_serializing_if = "Extensions::is_empty")]
     pub extensions: Extensions,
     /// Free-form maintainer notes.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
 
@@ -794,12 +812,12 @@ impl ValidationReport {
 #[serde(deny_unknown_fields)]
 pub struct Application {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub executable: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
 }
 
@@ -836,17 +854,24 @@ impl Application {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Storage {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub config: Vec<StoragePath>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache: Vec<StoragePath>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub state: Vec<StoragePath>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime: Vec<StoragePath>,
 }
 
 impl Storage {
+    pub fn is_empty(&self) -> bool {
+        self.config.is_empty()
+            && self.cache.is_empty()
+            && self.state.is_empty()
+            && self.runtime.is_empty()
+    }
+
     fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
         validate_storage_paths(
             diagnostics,
@@ -881,7 +906,7 @@ impl Storage {
 pub struct StoragePath {
     pub path: String,
     pub access: StorageAccess,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub justification: Option<String>,
 }
 
@@ -924,11 +949,15 @@ impl Serialize for StorageAccess {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Network {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outbound: Vec<OutboundNetwork>,
 }
 
 impl Network {
+    pub fn is_empty(&self) -> bool {
+        self.outbound.is_empty()
+    }
+
     fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
         for (index, outbound) in self.outbound.iter().enumerate() {
             let prefix = format!("network.outbound[{index}]");
@@ -966,7 +995,7 @@ impl Network {
 pub struct OutboundNetwork {
     pub to: String,
     pub protocol: NetworkProtocol,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
 }
 
@@ -1015,13 +1044,17 @@ impl Serialize for NetworkProtocol {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ipc {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unix_sockets: Vec<UnixSocket>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Dbus::is_empty")]
     pub dbus: Dbus,
 }
 
 impl Ipc {
+    pub fn is_empty(&self) -> bool {
+        self.unix_sockets.is_empty() && self.dbus.is_empty()
+    }
+
     fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
         for (index, socket) in self.unix_sockets.iter().enumerate() {
             let prefix = format!("ipc.unix_sockets[{index}]");
@@ -1089,11 +1122,15 @@ impl Serialize for UnixSocketMode {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dbus {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "SystemBus::is_empty")]
     pub system: SystemBus,
 }
 
 impl Dbus {
+    pub fn is_empty(&self) -> bool {
+        self.system.is_empty()
+    }
+
     fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
         self.system.validate(diagnostics);
     }
@@ -1103,13 +1140,17 @@ impl Dbus {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SystemBus {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub owns: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub talks_to: Vec<String>,
 }
 
 impl SystemBus {
+    pub fn is_empty(&self) -> bool {
+        self.owns.is_empty() && self.talks_to.is_empty()
+    }
+
     fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
         for (index, name) in self.owns.iter().enumerate() {
             validate_dbus_name(diagnostics, format!("ipc.dbus.system.owns[{index}]"), name);
@@ -1159,13 +1200,15 @@ impl Extensions {
 pub struct SelinuxExtensions {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_contexts: Vec<String>,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_yaml::Value>,
 }
 
 impl SelinuxExtensions {
     pub fn is_empty(&self) -> bool {
-        self.policy.is_empty() && self.unknown.is_empty()
+        self.policy.is_empty() && self.file_contexts.is_empty() && self.unknown.is_empty()
     }
 
     fn validate(&self, diagnostics: &mut Vec<Diagnostic>) {
@@ -1175,6 +1218,15 @@ impl SelinuxExtensions {
                 format!("extensions.selinux.policy[{index}]"),
                 fragment,
                 BackendSyntax::Selinux,
+            );
+        }
+
+        for (index, fragment) in self.file_contexts.iter().enumerate() {
+            validate_policy_fragment(
+                diagnostics,
+                format!("extensions.selinux.file_contexts[{index}]"),
+                fragment,
+                BackendSyntax::SelinuxFileContexts,
             );
         }
 
@@ -1252,6 +1304,7 @@ enum StorageKind {
 #[derive(Debug, Clone, Copy)]
 enum BackendSyntax {
     Selinux,
+    SelinuxFileContexts,
     AppArmor,
 }
 
@@ -1282,6 +1335,9 @@ fn validate_policy_fragment(
 
     match syntax {
         BackendSyntax::Selinux => validate_selinux_fragment(diagnostics, &field, &meaningful_lines),
+        BackendSyntax::SelinuxFileContexts => {
+            validate_selinux_file_context_fragment(diagnostics, &field, &meaningful_lines)
+        }
         BackendSyntax::AppArmor => {
             validate_apparmor_fragment(diagnostics, &field, &meaningful_lines)
         }
@@ -1295,15 +1351,34 @@ fn validate_selinux_fragment(
 ) {
     let body = meaningful_lines.join("\n");
 
-    if !body.ends_with(';') && !body.ends_with(')') {
+    if !body.ends_with(';') && !body.ends_with(')') && !body.ends_with('}') {
         diagnostics.push(
             Diagnostic::error(format!("{field} must contain complete SELinux statements"))
                 .found(body.clone())
-                .help("terminate allow/type rules with ';' or policy macros with ')'"),
+                .help("terminate allow/type rules with ';', policy macros with ')', or blocks with '}'"),
         );
     }
 
     validate_balanced_delimiters(diagnostics, field, &body, '{', '}');
+    validate_balanced_delimiters(diagnostics, field, &body, '(', ')');
+}
+
+fn validate_selinux_file_context_fragment(
+    diagnostics: &mut Vec<Diagnostic>,
+    field: &str,
+    meaningful_lines: &[&str],
+) {
+    for line in meaningful_lines {
+        if !line.contains("gen_context(") {
+            diagnostics.push(
+                Diagnostic::warning(format!("{field} may not be a SELinux file-context entry"))
+                    .found(*line)
+                    .help("expected a line containing gen_context(...)"),
+            );
+        }
+    }
+
+    let body = meaningful_lines.join("\n");
     validate_balanced_delimiters(diagnostics, field, &body, '(', ')');
 }
 

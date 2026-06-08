@@ -112,6 +112,7 @@ pub fn file_contexts(ir: &PolicyIr) -> String {
         &names.runtime_type,
     );
     push_socket_contexts(&mut contexts, &ir.unix_sockets, &names);
+    push_manual_file_contexts(&mut contexts, &ir.manual_extensions.selinux_file_contexts);
 
     contexts
 }
@@ -531,6 +532,31 @@ fn push_socket_contexts(contexts: &mut String, sockets: &[UnixSocketNeed], names
                     ),
                 );
             }
+        }
+    }
+}
+
+fn push_manual_file_contexts(contexts: &mut String, fragments: &[String]) {
+    if fragments.is_empty() {
+        return;
+    }
+
+    push_line(contexts, "");
+    push_line(contexts, "# Manual SELinux file-context extensions.");
+    push_line(
+        contexts,
+        "# These entries came from extensions.selinux.file_contexts and should be temporary until Intent has native support.",
+    );
+
+    for (index, fragment) in fragments.iter().enumerate() {
+        push_line(contexts, "");
+        push_line(
+            contexts,
+            &format!("# extensions.selinux.file_contexts[{index}]: manual file contexts."),
+        );
+
+        for line in fragment.trim().lines() {
+            push_line(contexts, line.trim_end());
         }
     }
 }

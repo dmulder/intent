@@ -1,0 +1,30 @@
+policy_module(himmelblaud, 1.0)
+
+# Primary daemon domain.
+type himmelblaud_t;
+type himmelblaud_exec_t;
+files_type(himmelblaud_exec_t)
+domain_type(himmelblaud_t)
+domain_entry_file(himmelblaud_t, himmelblaud_exec_t)
+init_daemon_domain(himmelblaud_t, himmelblaud_exec_t)
+
+type himmelblau_etc_t;
+type himmelblau_var_cache_t;
+type himmelblau_var_lib_t;
+type himmelblau_var_run_t;
+
+allow himmelblaud_t himmelblau_etc_t:dir { getattr open read search };
+allow himmelblaud_t himmelblau_etc_t:file { getattr open read };
+allow himmelblaud_t himmelblau_var_cache_t:dir { add_name create getattr open read remove_name search write };
+allow himmelblaud_t himmelblau_var_cache_t:file { create getattr lock open read setattr unlink write };
+allow himmelblaud_t himmelblau_var_lib_t:dir { add_name getattr open read search setattr write };
+allow himmelblaud_t himmelblau_var_lib_t:file { create getattr open read setattr write };
+allow himmelblaud_t himmelblau_var_run_t:dir { add_name create getattr open read remove_name search write };
+allow himmelblaud_t himmelblau_var_run_t:sock_file { create getattr setattr write unlink };
+
+corenet_tcp_connect_http_port(himmelblaud_t)
+allow himmelblaud_t self:capability net_bind_service;
+
+# Unmodeled rule should survive as raw SELinux policy.
+allow himmelblaud_t self:capability sys_ptrace;
+permissive himmelblaud_t;

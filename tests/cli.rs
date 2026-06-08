@@ -31,6 +31,7 @@ fn starts_and_prints_help() {
     assert!(stdout.contains("intent build <intent.yaml> --target selinux|apparmor|systemd|all"));
     assert!(stdout
         .contains("intent observe --source <audit.log> --format selinux|apparmor [--interactive]"));
+    assert!(stdout.contains("intent import <policy-file> --format selinux|apparmor"));
     assert!(stdout.contains("intent explain <intent.yaml>"));
     assert!(stdout.contains("intent schema [--format markdown|json-schema]"));
 }
@@ -216,6 +217,102 @@ fn recognizes_observe_formats() {
     assert!(stdout.contains("network:\n    outbound:"));
     assert!(stdout.contains("ipc:\n    unix_sockets:"));
     assert!(stdout.contains("peer_profile: unconfined"));
+}
+
+#[test]
+fn imports_selinux_policy_to_valid_intent_yaml() {
+    let output = intent()
+        .args([
+            "import",
+            "tests/fixtures/import_realworld_selinux.te",
+            "--format",
+            "selinux",
+        ])
+        .output()
+        .expect("intent import selinux should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert!(stdout.contains("application:\n  name: himmelblaud"));
+    assert!(stdout.contains("executable: /usr/bin/himmelblaud"));
+    assert!(stdout.contains("storage:"));
+    assert!(stdout.contains("path: /var/cache/private/himmelblaud"));
+    assert!(stdout.contains("access: read-write"));
+    assert!(stdout.contains("capabilities:\n- net-bind-service\n- sys-ptrace"));
+    assert!(stdout.contains("extensions:\n  selinux:"));
+    assert!(stdout.contains("permissive himmelblaud_t;"));
+    assert!(stdout.contains("file_contexts:"));
+
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(stderr.contains("warning: preserved"));
+
+    let imported_path =
+        env::temp_dir().join(format!("intent-import-selinux-{}.yaml", std::process::id()));
+    fs::write(&imported_path, stdout).expect("imported intent should be written");
+
+    let validate = intent()
+        .arg("validate")
+        .arg(&imported_path)
+        .output()
+        .expect("imported intent should validate");
+    assert!(validate.status.success());
+
+    let build = intent()
+        .arg("build")
+        .arg(&imported_path)
+        .args(["--target", "selinux"])
+        .output()
+        .expect("imported intent should build");
+    assert!(build.status.success());
+    let rebuilt = String::from_utf8(build.stdout).expect("stdout should be utf-8");
+    assert!(rebuilt.contains("allow himmelblaud_t self:capability sys_ptrace;"));
+}
+
+#[test]
+fn imports_apparmor_profile_to_valid_intent_yaml() {
+    let output = intent()
+        .args([
+            "import",
+            "tests/fixtures/import_realworld.apparmor",
+            "--format",
+            "apparmor",
+        ])
+        .output()
+        .expect("intent import apparmor should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert!(stdout.contains("application:\n  name: demo-service"));
+    assert!(stdout.contains("executable: /usr/bin/demo-service"));
+    assert!(stdout.contains("path: /etc/demo-service"));
+    assert!(stdout.contains("path: /run/demo-service/control.sock"));
+    assert!(stdout.contains("mode: server"));
+    assert!(stdout.contains("org.example.DemoService"));
+    assert!(stdout.contains("capabilities:\n- net-bind-service"));
+    assert!(stdout.contains("ptrace read peer=unconfined,"));
+
+    let imported_path = env::temp_dir().join(format!(
+        "intent-import-apparmor-{}.yaml",
+        std::process::id()
+    ));
+    fs::write(&imported_path, stdout).expect("imported intent should be written");
+
+    let validate = intent()
+        .arg("validate")
+        .arg(&imported_path)
+        .output()
+        .expect("imported intent should validate");
+    assert!(validate.status.success());
+
+    let build = intent()
+        .arg("build")
+        .arg(&imported_path)
+        .args(["--target", "apparmor"])
+        .output()
+        .expect("imported intent should build");
+    assert!(build.status.success());
+    let rebuilt = String::from_utf8(build.stdout).expect("stdout should be utf-8");
+    assert!(rebuilt.contains("ptrace read peer=unconfined,"));
 }
 
 #[test]

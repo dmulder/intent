@@ -8,5 +8,6 @@ pub mod audit;
 pub mod compiler;
 pub mod config;
 pub mod diagnostics;
+pub mod importer;
 pub mod ir;
 pub mod schema;

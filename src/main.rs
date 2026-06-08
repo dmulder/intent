@@ -12,6 +12,7 @@ use intent::compiler::{
     apparmor as apparmor_compiler, selinux as selinux_compiler, systemd as systemd_compiler, Target,
 };
 use intent::config::IntentConfig;
+use intent::importer::{self, ImportFormat};
 use intent::schema::{json_schema, markdown_documentation, ValidationOptions};
 
 fn main() -> ExitCode {
@@ -49,6 +50,10 @@ enum Cli {
         interactive: bool,
         merge_into: Option<PathBuf>,
     },
+    Import {
+        policy_path: PathBuf,
+        format: ImportFormat,
+    },
     Explain {
         intent_path: PathBuf,
     },
@@ -76,6 +81,7 @@ impl Cli {
             "validate" => parse_validate(&args[1..]),
             "build" => parse_build(&args[1..]),
             "observe" => parse_observe(&args[1..]),
+            "import" => parse_import(&args[1..]),
             "explain" => parse_explain(&args[1..]),
             "schema" => parse_schema(&args[1..]),
             other => Err(format!("unknown command '{other}'")),
@@ -224,6 +230,45 @@ fn parse_observe(args: &[String]) -> Result<Cli, String> {
     })
 }
 
+fn parse_import(args: &[String]) -> Result<Cli, String> {
+    let Some(policy_path) = args.first() else {
+        return Err("usage: intent import <policy-file> --format selinux|apparmor".to_string());
+    };
+
+    let mut format = None;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--format" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --format selinux|apparmor".to_string());
+                };
+                format = Some(
+                    value
+                        .parse::<ImportFormat>()
+                        .map_err(|err| format!("invalid --format: {err}"))?,
+                );
+                index += 2;
+            }
+            other => {
+                return Err(format!(
+                    "unknown import option '{other}'; usage: intent import <policy-file> --format selinux|apparmor"
+                ));
+            }
+        }
+    }
+
+    let Some(format) = format else {
+        return Err("missing required --format selinux|apparmor".to_string());
+    };
+
+    Ok(Cli::Import {
+        policy_path: PathBuf::from(policy_path),
+        format,
+    })
+}
+
 fn parse_explain(args: &[String]) -> Result<Cli, String> {
     match args {
         [intent_path] => Ok(Cli::Explain {
@@ -339,6 +384,17 @@ fn run(command: Cli) -> Result<(), String> {
                 print!("{output}");
             }
         }
+        Cli::Import {
+            policy_path,
+            format,
+        } => {
+            let imported =
+                importer::import_path(&policy_path, format).map_err(|err| err.to_string())?;
+            for warning in &imported.warnings {
+                eprintln!("warning: {warning}");
+            }
+            print!("{}", imported.to_yaml().map_err(|err| err.to_string())?);
+        }
         Cli::Explain { intent_path } => {
             let config = IntentConfig::from_path(&intent_path).map_err(|err| err.to_string())?;
             print!("{}", config.ir.explain());
@@ -360,6 +416,7 @@ Usage:
   intent validate <intent.yaml> [--deny-warnings]
   intent build <intent.yaml> --target selinux|apparmor|systemd|all [--output <dir>]
   intent observe --source <audit.log> --format selinux|apparmor [--interactive] [--merge-into <intent.yaml>]
+  intent import <policy-file> --format selinux|apparmor
   intent explain <intent.yaml>
   intent schema [--format markdown|json-schema]"
 }

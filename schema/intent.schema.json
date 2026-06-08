@@ -154,6 +154,15 @@
                 "minLength": 1
               },
               "description": "Manual SELinux type-enforcement policy fragments inserted into the generated policy module."
+            },
+            "file_contexts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Manual SELinux file-context fragments appended to the generated file-context output."
             }
           }
         },

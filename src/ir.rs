@@ -150,6 +150,7 @@ impl PolicyIr {
             capabilities,
             manual_extensions: ManualExtensions {
                 selinux_policy: document.extensions.selinux.policy.clone(),
+                selinux_file_contexts: document.extensions.selinux.file_contexts.clone(),
                 apparmor_rules: document.extensions.apparmor.rules.clone(),
             },
         }
@@ -205,6 +206,7 @@ pub struct ApplicationIdentity {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ManualExtensions {
     pub selinux_policy: Vec<String>,
+    pub selinux_file_contexts: Vec<String>,
     pub apparmor_rules: Vec<String>,
 }
 
@@ -484,7 +486,10 @@ fn push_capability_section(output: &mut String, capabilities: &[CapabilityNeed])
 fn push_manual_extension_section(output: &mut String, extensions: &ManualExtensions) {
     push_line(output, "");
     push_line(output, "Manual extensions:");
-    if extensions.selinux_policy.is_empty() && extensions.apparmor_rules.is_empty() {
+    if extensions.selinux_policy.is_empty()
+        && extensions.selinux_file_contexts.is_empty()
+        && extensions.apparmor_rules.is_empty()
+    {
         push_line(output, "  none");
         return;
     }
@@ -495,6 +500,16 @@ fn push_manual_extension_section(output: &mut String, extensions: &ManualExtensi
             &format!(
                 "  - SELinux policy fragments: {}",
                 extensions.selinux_policy.len()
+            ),
+        );
+    }
+
+    if !extensions.selinux_file_contexts.is_empty() {
+        push_line(
+            output,
+            &format!(
+                "  - SELinux file-context fragments: {}",
+                extensions.selinux_file_contexts.len()
             ),
         );
     }

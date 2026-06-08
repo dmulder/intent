@@ -1,0 +1,26 @@
+#include <tunables/global>
+
+profile demo-service /usr/bin/demo-service {
+  /usr/bin/demo-service r,
+  /etc/demo-service r,
+  /etc/demo-service/** r,
+  /var/cache/demo-service rwk,
+  /var/cache/demo-service/** rwk,
+  /var/lib/demo-service rwk,
+  /run/demo-service rwk,
+
+  network inet stream,
+  network inet6 stream,
+
+  unix (create, bind, listen, accept, send, receive) type=stream addr="/run/demo-service/control.sock",
+  unix (connect, send, receive) type=stream peer=(addr="/run/systemd/notify"),
+
+  dbus bind bus=system name="org.example.DemoService",
+  dbus send bus=system peer=(name="org.freedesktop.DBus"),
+  dbus receive bus=system peer=(name="org.freedesktop.DBus"),
+
+  capability net_bind_service,
+
+  # Unmodeled AppArmor rule should survive as a raw extension.
+  ptrace read peer=unconfined,
+}
