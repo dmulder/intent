@@ -1,0 +1,56 @@
+# Evolving Intent example. This is not production-ready policy.
+version: 1
+
+application:
+  name: himmelblaud
+  description: Daemon-style Linux identity and authentication service for Himmelblau
+  executable: /usr/bin/himmelblaud
+  user: root
+  group: root
+
+storage:
+  config:
+    - path: /etc/himmelblau
+      access: read
+
+  cache:
+    - path: /var/cache/himmelblaud
+      access: read-write
+
+  state:
+    - path: /var/lib/himmelblaud
+      access: read-write
+
+  runtime:
+    - path: /run/himmelblaud
+      access: read-write
+
+network:
+  outbound:
+    - to: login.microsoftonline.com
+      protocol: https
+    - to: graph.microsoft.com
+      protocol: https
+
+ipc:
+  unix_sockets:
+    - path: /run/himmelblaud/socket
+      mode: server
+    - path: /run/systemd/resolve/io.systemd.Resolve
+      mode: client
+
+  dbus:
+    system:
+      owns:
+        - com.microsoft.himmelblaud
+      talks_to:
+        - org.freedesktop.DBus
+        - org.freedesktop.resolve1
+        - org.freedesktop.systemd1
+
+notes:
+  - This example is snapshot-style reference output for Intent development, not installable production policy.
+  - The current schema models one daemon process; the upstream Himmelblau policy has multiple cooperating executables and domains.
+  - The schema cannot yet distinguish private systemd directories, compatibility symlinks, or side caches such as NSS cache paths.
+  - SELinux D-Bus mediation is currently emitted as review warnings because peer service types are distribution-specific.
+  - Resolver, certificate, PAM/NSS, machine identity, TPM, and other host integration reads still need richer high-level intents.

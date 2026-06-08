@@ -4,6 +4,26 @@ use intent::compiler::selinux;
 use intent::config::IntentConfig;
 
 #[test]
+fn himmelblau_example_selinux_module_matches_expected_output() {
+    let config = IntentConfig::from_path("examples/himmelblau/intent.yaml")
+        .expect("example intent should load");
+    let generated = selinux::compile(&config.ir);
+    let expected = include_str!("../examples/himmelblau/expected/selinux/himmelblaud.te");
+
+    assert_eq!(generated, expected);
+}
+
+#[test]
+fn himmelblau_example_selinux_file_contexts_match_expected_output() {
+    let config = IntentConfig::from_path("examples/himmelblau/intent.yaml")
+        .expect("example intent should load");
+    let generated = selinux::file_contexts(&config.ir);
+    let expected = include_str!("../examples/himmelblau/expected/selinux/himmelblaud.fc");
+
+    assert_eq!(generated, expected);
+}
+
+#[test]
 fn himmelblaud_selinux_module_matches_snapshot() {
     let config = IntentConfig::from_path("examples/himmelblaud.intent.yaml")
         .expect("example intent should load");
